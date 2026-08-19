@@ -19,6 +19,11 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch: # so a run can be forced while debugging
 
+# This job calls one HTTP endpoint and checks out nothing. It has no use for
+# a repository token, so it is given none — an hourly workflow holding write
+# access to the repo it never touches is a standing risk for no benefit.
+permissions: {}
+
 concurrency:
   # A late run must never overlap the next one. Sync tolerates concurrency —
   # it adopts on duplicate-key rather than failing — but two passes racing
