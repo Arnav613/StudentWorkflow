@@ -1,4 +1,4 @@
-"""Connect, sync, status, disconnect — the four routes phase 02 ships.
+"""Connect, sync, status, disconnect, and the course list behind the link picker.
 
 Why the refresh token arrives in a request body rather than being fetched by
 this server: Supabase already ran the OAuth dance, and it surfaces
@@ -134,6 +134,53 @@ async def connection_status(
         last_success_at=s.get("last_success_at"),
         last_error=s.get("last_error"),
     )
+
+
+class Course(BaseModel):
+    id: str
+    name: str
+    section: str | None = None
+    """The class row already pointing at this course, if there is one."""
+    linked_class_id: str | None = None
+
+
+@router.get("/courses", response_model=list[Course])
+async def list_courses(
+    user: CurrentUser = Depends(get_current_user),
+    _: Settings = Depends(_require_enabled),
+) -> list[Course]:
+    """The user's Classroom courses, for the link picker on a new class.
+
+    Deliberately unfiltered by term, unlike sync. The term filter exists to
+    stop a sync importing four years of archived courses unasked; this list is
+    something a person opened on purpose and read, and hiding the course they
+    are looking for because its name lacks a substring would be a bug they
+    could not diagnose.
+
+    Dismissed courses are not filtered either. A tombstone means "stop
+    importing this automatically" — it was never meant to override someone
+    explicitly asking for that course by name.
+    """
+    try:
+        token = await classroom_sync.get_access_token(user.id)
+        courses = await google.list_courses(token)
+    except google.ReconnectRequired as exc:
+        raise HTTPException(status_code=RECONNECT, detail=str(exc)) from exc
+    except google.ClassroomError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+    rows = await db.select("classes", user_id=db.eq(user.id))
+    linked = {c["google_course_id"]: c["id"] for c in rows if c["google_course_id"]}
+
+    return [
+        Course(
+            id=c["id"],
+            name=c.get("name") or "Untitled course",
+            section=c.get("section"),
+            linked_class_id=linked.get(c["id"]),
+        )
+        for c in courses
+    ]
 
 
 @router.post("/sync")
