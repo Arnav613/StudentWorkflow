@@ -8,7 +8,7 @@
  * React tree.
  */
 
-import type { Task, TaskStatus } from "./types";
+import type { HealthTask, Task, TaskStatus } from "./types";
 
 export const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: "todo", label: "Do" },
@@ -172,4 +172,63 @@ export function nextDue(tasks: Task[]): Task | null {
   return live.reduce((best, t) =>
     Date.parse(t.due_at!) < Date.parse(best.due_at!) ? t : best,
   );
+}
+
+/* ---------------------------------------------------------------------------
+   Class health
+   ------------------------------------------------------------------------ */
+
+/**
+ * Below this many dated completions, the on-time rate is not reported.
+ *
+ * Two-for-two is 100%, and 100% next to a real 78% invites a comparison that
+ * the numbers cannot support. A dash says "not yet" and is honest.
+ */
+export const MIN_RATED_COMPLETIONS = 5;
+
+export type ClassHealth = {
+  /** Everything ever recorded for the class, archived rows included. */
+  total: number;
+  done: number;
+  /** Live tasks past their due date. The number that is actionable today. */
+  overdue: number;
+  /** Finished at or before the deadline, over finished-with-a-deadline. */
+  onTimeRate: number | null;
+};
+
+/**
+ * How a class is actually going.
+ *
+ * Reads `completed_at` against `due_at`, which is the reason done tasks are
+ * archived rather than deleted — a week of visible history would make the
+ * rate a rolling seven-day figure that swings on a single late reading.
+ *
+ * Only tasks that had a deadline count towards the rate: a task with no due
+ * date cannot be finished late, and counting it as on time would let someone
+ * lift the number by adding undated work.
+ */
+export function classHealth(
+  tasks: HealthTask[],
+  now = Date.now(),
+): ClassHealth {
+  let done = 0;
+  let overdue = 0;
+  let rated = 0;
+  let onTime = 0;
+
+  for (const t of tasks) {
+    if (t.status === "done") done++;
+    if (t.status !== "done" && t.due_at && Date.parse(t.due_at) < now) overdue++;
+    if (t.status === "done" && t.completed_at && t.due_at) {
+      rated++;
+      if (Date.parse(t.completed_at) <= Date.parse(t.due_at)) onTime++;
+    }
+  }
+
+  return {
+    total: tasks.length,
+    done,
+    overdue,
+    onTimeRate: rated >= MIN_RATED_COMPLETIONS ? onTime / rated : null,
+  };
 }

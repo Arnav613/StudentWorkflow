@@ -53,8 +53,10 @@ export default function ClassroomPanel({
   session: Session;
   onSynced: () => void;
 }) {
-  const { status, report, busy, error, connect, sync, disconnect } =
-    useClassroom(session, onSynced);
+  const { status, report, busy, error, connect, disconnect } = useClassroom(
+    session,
+    onSynced,
+  );
 
   const connected = status?.connected ?? false;
   const needsReconnect = status?.needs_reconnect ?? false;
@@ -91,14 +93,14 @@ export default function ClassroomPanel({
             Connect Classroom
           </button>
         ) : (
-          <>
-            <button onClick={() => sync()} disabled={Boolean(busy)}>
-              Sync now
-            </button>
-            <button onClick={disconnect} disabled={Boolean(busy)}>
-              Disconnect
-            </button>
-          </>
+          /* No Sync now. useClassroom already syncs on open when the last
+             success is over half an hour old, and cron syncs in between, so
+             the button did nothing a reload would not — while implying the
+             board is only current because you pressed it. `sync` stays: the
+             fresh-connect path still calls it. */
+          <button onClick={disconnect} disabled={Boolean(busy)}>
+            Disconnect
+          </button>
         )}
       </div>
 

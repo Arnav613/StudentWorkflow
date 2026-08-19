@@ -1,5 +1,12 @@
-import type { Class, Task } from "../lib/types";
-import { formatDue, formatDueExact, formatLate, isOverdue, nextDue } from "../lib/board";
+import type { Class, HealthTask, Task } from "../lib/types";
+import {
+  classHealth,
+  formatDue,
+  formatDueExact,
+  formatLate,
+  isOverdue,
+  nextDue,
+} from "../lib/board";
 
 /**
  * A class, as a card you open.
@@ -13,15 +20,23 @@ import { formatDue, formatDueExact, formatLate, isOverdue, nextDue } from "../li
  * to show everything becomes a second board, and the board already exists one
  * tab over. The question this card answers is narrower: do I need to open
  * this today?
+ *
+ * Under that, how the class is going: on-time rate, anything overdue, and a
+ * thin done ÷ total bar. Those come from the archive as well as the board,
+ * which is the whole reason finished tasks are archived instead of deleted —
+ * a term-long record is the only version of "on time" worth printing.
  */
 export default function ClassCard({
   cls,
   tasks,
+  history,
   noteCount,
   onOpen,
 }: {
   cls: Class;
   tasks: Task[];
+  /** Archived tasks for this class. Null while the archive is still loading. */
+  history: HealthTask[] | null;
   noteCount: number | null;
   onOpen: () => void;
 }) {
@@ -29,6 +44,8 @@ export default function ClassCard({
   const late = next ? isOverdue(next) : false;
   const todo = tasks.filter((t) => t.status === "todo").length;
   const doing = tasks.filter((t) => t.status === "doing").length;
+  const health = classHealth([...tasks, ...(history ?? [])]);
+  const percent = health.total ? Math.round((health.done / health.total) * 100) : 0;
 
   return (
     <button className={`class-card hue-${cls.color}`} onClick={onOpen}>
@@ -61,6 +78,32 @@ export default function ClassCard({
           ) : (
             <span className="muted small">Nothing due.</span>
           )}
+        </span>
+
+        {/* The bar is the class at a glance; the two figures beside it are
+            what the bar cannot say — whether the finished half was finished
+            on time, and whether anything is late right now. */}
+        <span className="class-card-health">
+          <span
+            className="health-bar"
+            role="img"
+            aria-label={`${health.done} of ${health.total} done`}
+          >
+            <span className="health-fill" style={{ width: `${percent}%` }} />
+          </span>
+          <span className="class-card-stats small">
+            <span className="muted">
+              {/* A dash under five dated completions: two-for-two is 100%,
+                  and 100% beside a real 78% invites a comparison the numbers
+                  cannot carry. */}
+              {health.onTimeRate === null
+                ? "— on time"
+                : `${Math.round(health.onTimeRate * 100)}% on time`}
+            </span>
+            {health.overdue > 0 && (
+              <span className="error">{health.overdue} overdue</span>
+            )}
+          </span>
         </span>
 
         <span className="class-card-foot small muted">

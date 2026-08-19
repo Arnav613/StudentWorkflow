@@ -14,7 +14,14 @@
  */
 
 import { supabase } from "./supabase";
-import type { Class, ChecklistItem, ClassLink, Task, TaskStatus } from "./types";
+import type {
+  Class,
+  ChecklistItem,
+  ClassLink,
+  HealthTask,
+  Task,
+  TaskStatus,
+} from "./types";
 
 function unwrap<T>({ data, error }: { data: T | null; error: unknown }): T {
   if (error) throw error;
@@ -121,6 +128,24 @@ export async function listTasks(): Promise<Task[]> {
       .is("archived_at", null)
       .order("due_at", { ascending: true, nullsFirst: false })
       .order("position", { ascending: true }),
+  );
+}
+
+/**
+ * The archive, for the health cards only.
+ *
+ * `listTasks` deliberately excludes archived rows — they are history, not
+ * board state — but an on-time rate computed from the last seven days is a
+ * rate that swings on one late reading. So the history is fetched separately,
+ * with only the four columns the arithmetic touches: this list grows all term
+ * and nothing on the screen needs its titles.
+ */
+export async function listArchivedTasks(): Promise<HealthTask[]> {
+  return unwrap(
+    await supabase
+      .from("tasks")
+      .select("class_id, status, due_at, completed_at")
+      .not("archived_at", "is", null),
   );
 }
 

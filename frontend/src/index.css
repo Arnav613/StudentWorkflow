@@ -147,21 +147,19 @@ body {
   -webkit-font-smoothing: antialiased;
 
   /*
-   * Two very soft colour washes over the base, fixed so they do not slide
-   * under a scrolling board. This is the difference between "an app" and "a
-   * white page with boxes on it", and it costs one gradient — no images, no
-   * requests, nothing to load.
+   * One near-neutral wash down from the top, fixed so it does not slide under
+   * a scrolling board. It was two radial washes in indigo and pink, hardcoded
+   * hexes that agreed with neither each other nor --accent: three hues that
+   * nearly match read as template output, which is worse than no gradient at
+   * all. This is the accent itself, at a fraction of the tint that colours a
+   * chip, so the page has a light source without having a colour scheme of
+   * its own.
    */
   background:
-    radial-gradient(
-      70rem 40rem at 12% -8%,
-      color-mix(in srgb, #6366f1 var(--tint), transparent),
-      transparent 60%
-    ),
-    radial-gradient(
-      60rem 36rem at 92% 4%,
-      color-mix(in srgb, #ec4899 calc(var(--tint) * 0.6), transparent),
-      transparent 60%
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) calc(var(--tint) * 0.7), transparent),
+      transparent 32rem
     ),
     var(--bg);
   background-attachment: fixed;
@@ -631,8 +629,15 @@ button.link.danger:hover:not(:disabled) {
   border-radius: 50%;
   font-size: 0.85rem;
   font-weight: 600;
-  background: linear-gradient(140deg, #6366f1, #a855f7);
-  color: #fff;
+  /* Derived from --accent rather than a third pair of hardcoded hexes: the
+     avatar sits two centimetres from the page wash and used to be a visibly
+     different indigo. */
+  background: linear-gradient(
+    140deg,
+    var(--accent),
+    color-mix(in srgb, var(--accent) 65%, #ec4899)
+  );
+  color: var(--accent-fg);
   display: grid;
   place-items: center;
 }
@@ -808,10 +813,42 @@ button.link.danger:hover:not(:disabled) {
   -webkit-box-orient: vertical;
 }
 
+/* Health sits above the foot rule: the bar and the two figures are about the
+   class, the counts under the rule are about the board. */
+.class-card-health {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: auto;
+  padding-top: 0.75rem;
+}
+
+.health-bar {
+  display: block;
+  height: 0.25rem;
+  border-radius: 999px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+/* The class's own colour, so the bar reads as belonging to this card rather
+   than as a generic progress widget. */
+.health-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--c, var(--accent));
+  transition: width 0.25s ease;
+}
+
+.class-card-stats {
+  display: flex;
+  gap: 0.6rem;
+}
+
 .class-card-foot {
   display: flex;
   gap: 0.85rem;
-  margin-top: auto;
   border-top: 1px solid var(--border);
 }
 
@@ -1094,14 +1131,27 @@ button.link.danger:hover:not(:disabled) {
   width: 100%;
 }
 
-@media (max-width: 52rem) {
+/* 64rem, matching the point where the link list goes to two columns: the
+   form and the list under it should reflow on the same breakpoint or the tab
+   changes shape twice on the way down to a phone. */
+@media (max-width: 64rem) {
   .docs-form {
     grid-template-columns: 1fr;
   }
 }
 
-.narrow {
-  max-width: 58rem;
+/* Two columns on anything wide. Docs used to be capped at 58rem with no
+   margin-inline, so it hung as a left-aligned column under a full-width class
+   header — the panel looked broken rather than narrow. It now fills .page
+   like the Tasks tab, and the links use the room instead of running one short
+   row per 88rem line. */
+@media (min-width: 64rem) {
+  .docs-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.15rem 1.25rem;
+    align-items: start;
+  }
 }
 
 .docs-list > li {
@@ -1109,6 +1159,10 @@ button.link.danger:hover:not(:disabled) {
   border-radius: var(--r-md);
   gap: 0.6rem;
   border: 1px solid transparent;
+  /* A grip, an icon, a title, a host and three buttons do not fit across a
+     phone. Wrapping lets the actions drop to their own line instead of
+     crushing the title to two characters. */
+  flex-wrap: wrap;
 }
 
 .docs-list > li:hover {

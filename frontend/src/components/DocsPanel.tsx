@@ -137,7 +137,7 @@ export default function DocsPanel({
   }
 
   return (
-    <div className="stack narrow">
+    <div className="stack">
       <section className="panel">
         <h2>Add a link</h2>
         <form className="docs-form" onSubmit={add}>

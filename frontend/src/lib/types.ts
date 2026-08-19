@@ -35,6 +35,16 @@ export type Task = {
   updated_at: string;
 };
 
+/**
+ * A task reduced to what the class health cards compute over. The archive is
+ * fetched as these columns alone — it grows all term and nothing on screen
+ * needs its titles.
+ */
+export type HealthTask = Pick<
+  Task,
+  "class_id" | "status" | "due_at" | "completed_at"
+>;
+
 export type ChecklistItem = {
   id: string;
   user_id: string;

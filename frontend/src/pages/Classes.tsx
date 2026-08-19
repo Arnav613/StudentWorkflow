@@ -4,6 +4,7 @@ import * as db from "../lib/db";
 import * as notesApi from "../lib/notes";
 import { getClassroomCourses, type ClassroomCourse } from "../lib/api";
 import { CLASS_COLORS } from "../lib/types";
+import type { HealthTask } from "../lib/types";
 import type { DataStore } from "../hooks/useData";
 import { toast } from "../lib/toast";
 import ClassCard from "../components/ClassCard";
@@ -32,6 +33,7 @@ export default function ClassesPage({
   const visible = classes.filter((c) => !c.hidden);
   const [adding, setAdding] = useState(false);
   const [noteCounts, setNoteCounts] = useState<Record<string, number> | null>(null);
+  const [archive, setArchive] = useState<HealthTask[] | null>(null);
 
   // Counts are decoration on a card that is already useful without them, so
   // they load separately and their failure is silent — a grid that refuses to
@@ -46,6 +48,30 @@ export default function ClassesPage({
       live = false;
     };
   }, [classes.length]);
+
+  // The archive, for the health bars. Same contract as the note counts: a
+  // card is useful without it, so it loads on its own and a failure leaves
+  // the bars reading only live rows rather than blocking the grid.
+  useEffect(() => {
+    let live = true;
+    db.listArchivedTasks()
+      .then((a) => live && setArchive(a))
+      .catch(() => live && setArchive([]));
+    return () => {
+      live = false;
+    };
+  }, [tasks.length]);
+
+  const historyByClass = useMemo(() => {
+    const m = new Map<string, HealthTask[]>();
+    for (const t of archive ?? []) {
+      if (!t.class_id) continue;
+      const list = m.get(t.class_id);
+      if (list) list.push(t);
+      else m.set(t.class_id, [t]);
+    }
+    return m;
+  }, [archive]);
 
   const byClass = useMemo(() => {
     const m = new Map<string, typeof tasks>();
@@ -106,6 +132,7 @@ export default function ClassesPage({
               key={c.id}
               cls={c}
               tasks={byClass.get(c.id) ?? []}
+              history={archive ? (historyByClass.get(c.id) ?? []) : null}
               noteCount={noteCounts ? (noteCounts[c.id] ?? 0) : null}
               onOpen={() => onOpen(c.id)}
             />
