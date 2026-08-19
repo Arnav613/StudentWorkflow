@@ -35,16 +35,28 @@ function summary(r: SyncReport): string {
     r.courses_skipped_term &&
       `${r.courses_skipped_term} course${r.courses_skipped_term === 1 ? "" : "s"} from another term, skipped`,
   ].filter(Boolean);
-  return parts.length ? parts.join(" · ") : "Everything was already up to date.";
+  // Empty when nothing changed. It used to say "Everything was already up to
+  // date", which was true and worth saying beside a button someone had just
+  // pressed; appended to a line that now prints on every load it is only
+  // noise. "Synced 2 min ago" already carries it.
+  return parts.join(" · ");
 }
 
 /**
- * Connect Classroom, sync, and the reconnect banner.
+ * Connect Classroom, and the two things that can go wrong with it.
  *
- * The banner is built now rather than saved for polish because it is not a
- * nicety: in Testing mode Google expires the refresh token every seven days,
- * so every user hits this weekly. Without it they would see a board that has
- * quietly stopped updating and no way to guess why.
+ * There used to be a panel here permanently: a heading, a Disconnect button
+ * and a status line, sitting under the class grid on every load of a working
+ * connection. A connection that works needs no controls — it is not a feature
+ * you operate, it is plumbing — and a box whose only button destroys it is a
+ * box that can only ever be pressed by mistake. So once connected this
+ * collapses to one muted line, and the panel comes back only when there is
+ * something to do: connect for the first time, or reconnect.
+ *
+ * The banner is not a nicety: in Testing mode Google expires the refresh
+ * token every seven days, so every user hits this weekly. Without it they
+ * would see a board that has quietly stopped updating and no way to guess
+ * why.
  */
 export default function ClassroomPanel({
   session,
@@ -53,7 +65,7 @@ export default function ClassroomPanel({
   session: Session;
   onSynced: () => void;
 }) {
-  const { status, report, busy, error, connect, disconnect } = useClassroom(
+  const { status, report, busy, error, connect } = useClassroom(
     session,
     onSynced,
   );
@@ -61,11 +73,45 @@ export default function ClassroomPanel({
   const connected = status?.connected ?? false;
   const needsReconnect = status?.needs_reconnect ?? false;
 
+  // Connected, working, nothing to report: one line saying when it last
+  // heard from Google. Not nothing — a board that updates itself has to say
+  // so somewhere, or the first missing assignment reads as a broken app
+  // rather than a Classroom that has not posted it yet.
+  if (connected && !needsReconnect) {
+    return (
+      <p className="muted small classroom-line">
+        {busy ? (
+          <>
+            {busy}{" "}
+            <span className="small">
+              The first request of the day wakes the server and can take up to
+              a minute.
+            </span>
+          </>
+        ) : (
+          <>
+            Classroom synced {when(status?.last_success_at)}
+            {report && summary(report) ? ` · ${summary(report)}` : ""}
+            {status?.last_error ? ` · last attempt failed: ${status.last_error}` : ""}
+            {error ? ` · ${error}` : ""}
+            {/* Skipped courses and the like. Quiet, but never dropped: "why
+                is my course missing" is the question they answer. */}
+            {report?.warnings.map((w) => (
+              <span key={w} className="classroom-warning">
+                {w}
+              </span>
+            ))}
+          </>
+        )}
+      </p>
+    );
+  }
+
   return (
     <section className="panel">
       <h2>Google Classroom</h2>
 
-      {needsReconnect && (
+      {needsReconnect ? (
         <div className="banner">
           <strong>Reconnect Classroom.</strong>{" "}
           <span className="muted">
@@ -74,35 +120,27 @@ export default function ClassroomPanel({
             coursework has stopped arriving.
           </span>
           <div className="row">
-            <button onClick={connect}>Reconnect</button>
+            <button onClick={connect} disabled={Boolean(busy)}>
+              Reconnect
+            </button>
           </div>
         </div>
+      ) : (
+        <>
+          {!busy && (
+            <p className="muted small">
+              Import your courses and their deadlines. Read-only: this can see
+              your courses and your own assignments, and can never write to
+              Classroom or read anyone else&rsquo;s work.
+            </p>
+          )}
+          <div className="row">
+            <button onClick={connect} disabled={Boolean(busy)}>
+              Connect Classroom
+            </button>
+          </div>
+        </>
       )}
-
-      {!connected && !busy && (
-        <p className="muted small">
-          Import your courses and their deadlines. Read-only: this can see your
-          courses and your own assignments, and can never write to Classroom or
-          read anyone else&rsquo;s work.
-        </p>
-      )}
-
-      <div className="row">
-        {!connected ? (
-          <button onClick={connect} disabled={Boolean(busy)}>
-            Connect Classroom
-          </button>
-        ) : (
-          /* No Sync now. useClassroom already syncs on open when the last
-             success is over half an hour old, and cron syncs in between, so
-             the button did nothing a reload would not — while implying the
-             board is only current because you pressed it. `sync` stays: the
-             fresh-connect path still calls it. */
-          <button onClick={disconnect} disabled={Boolean(busy)}>
-            Disconnect
-          </button>
-        )}
-      </div>
 
       {busy && (
         <p className="muted">
@@ -113,25 +151,6 @@ export default function ClassroomPanel({
           </span>
         </p>
       )}
-
-      {connected && !busy && (
-        <p className="muted small">
-          Last synced {when(status?.last_success_at)}
-          {status?.last_error && !needsReconnect
-            ? ` · last attempt failed: ${status.last_error}`
-            : ""}
-        </p>
-      )}
-
-      {report && !busy && <p className="ok">{summary(report)}</p>}
-
-      {report?.warnings.length ? (
-        <ul className="list small muted">
-          {report.warnings.map((w) => (
-            <li key={w}>{w}</li>
-          ))}
-        </ul>
-      ) : null}
 
       {error && <p className="error">{error}</p>}
     </section>

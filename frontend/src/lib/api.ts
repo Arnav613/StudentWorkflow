@@ -99,9 +99,6 @@ export const connectClassroomToken = (refresh_token: string) =>
 export const syncClassroom = () =>
   api<SyncReport>("/classroom/sync", { method: "POST" });
 
-export const disconnectClassroom = () =>
-  api<{ disconnected: boolean }>("/classroom/disconnect", { method: "DELETE" });
-
 export type ClassroomCourse = {
   id: string;
   name: string;

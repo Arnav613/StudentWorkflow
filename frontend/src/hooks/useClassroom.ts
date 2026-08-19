@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
-  disconnectClassroom,
   getClassroomStatus,
   isReconnectError,
   syncClassroom,
@@ -15,35 +14,33 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : "Something went wrong";
 }
 
-/** How stale the data has to be before opening the app triggers a sync. */
-const STALE_AFTER_MS = 30 * 60 * 1000;
-
 /**
  * Whether an app-open should pull from Classroom.
  *
- * Not while disconnected, and not while the grant is known dead — the
- * reconnect banner is the fix for that, and an automatic sync that can only
- * fail would just decorate it with an error. Otherwise: only if the last
- * *successful* sync is older than half an hour. The hourly cron does the real
- * work; this exists for the gap between the last cron run and right now, and
- * for the user whose cron has never seen them because they just connected.
+ * Every load, whenever there is a live grant. There used to be a half-hour
+ * staleness gate, on the theory that the hourly cron had probably just run
+ * and a second round trip was waste. In practice the cost of being wrong is
+ * asymmetric: a spare request to Google costs a few hundred milliseconds in
+ * the background, while a deadline posted twenty minutes ago and not shown is
+ * the one failure this app exists to prevent. Opening the app is the moment
+ * someone is deciding what to do next, and it should be answered with what
+ * Classroom holds now.
  *
- * A user who has never synced successfully has last_success_at of null, which
- * reads as infinitely stale — correct, that is exactly who most needs it.
+ * Still not while disconnected, and not while the grant is known dead — the
+ * reconnect banner is the fix for that, and an automatic sync that can only
+ * fail would just decorate it with an error.
  */
 function shouldSyncOnOpen(status: ConnectionStatus | null): boolean {
-  if (!status?.connected || status.needs_reconnect) return false;
-  if (!status.last_success_at) return true;
-  return Date.now() - Date.parse(status.last_success_at) > STALE_AFTER_MS;
+  return Boolean(status?.connected) && !status?.needs_reconnect;
 }
 
 /**
- * Everything the Connect Classroom panel needs, in one place.
+ * Everything the Classroom connection needs, in one place.
  *
- * `busy` deliberately covers status, sync and disconnect together. All three
- * hit Render, which sleeps — so the first one of the day can take thirty
- * seconds, and the honest thing to show is one clear "working" state rather
- * than three independent spinners racing a cold start.
+ * `busy` deliberately covers status and sync together. Both hit Render, which
+ * sleeps — so the first one of the day can take thirty seconds, and the
+ * honest thing to show is one clear "working" state rather than two
+ * independent spinners racing a cold start.
  */
 export function useClassroom(session: Session, onSynced: () => void) {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
@@ -105,10 +102,9 @@ export function useClassroom(session: Session, onSynced: () => void) {
         }
         if (typeof outcome === "object") setError(outcome.error);
 
-        // Sync on app open — but only when the hourly cron has not already
-        // done it. Opening the app twice in ten minutes should not cost two
-        // round trips to Google and a cold start; opening it after a night
-        // asleep should show today's coursework without pressing anything.
+        // Sync on app open, every time. The cron keeps the board current
+        // while the app is closed; this is what makes it current the moment
+        // it is opened.
         const current = await refreshStatus();
         if (shouldSyncOnOpen(current)) await sync("Checking for new coursework…");
       } catch (e) {
@@ -143,19 +139,12 @@ export function useClassroom(session: Session, onSynced: () => void) {
     }
   }, []);
 
-  const disconnect = useCallback(async () => {
-    setBusy("Disconnecting…");
-    setError(null);
-    try {
-      await disconnectClassroom();
-      setReport(null);
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      await refreshStatus();
-      setBusy(null);
-    }
-  }, [refreshStatus]);
-
-  return { status, report, busy, error, connect, sync, disconnect, refreshStatus };
+  // No disconnect. Revoking this app's access is something Google offers in
+  // one place for every app that has it, and a button here could only ever be
+  // a worse copy of it — one that leaves the grant alive on Google's side
+  // while the app claims otherwise. The endpoint is still there for anyone
+  // who needs it; what is gone is a destructive control sitting permanently
+  // under a class grid, where the only people who ever pressed it did so by
+  // accident.
+  return { status, report, busy, error, connect, sync, refreshStatus };
 }
