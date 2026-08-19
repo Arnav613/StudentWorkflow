@@ -1029,18 +1029,19 @@ button.link.danger:hover:not(:disabled) {
 }
 
 /* ---------------------------------------------------------------------------
-   Date picker
+   Pickers
 
+   One trigger and one popover, shared by the date field and the class field.
    The trigger is styled to match input/select exactly — same border, radius
-   and padding — because it stands in for one, and a form where the date field
-   is visibly a different kind of control is the problem this replaced.
+   and padding — because it stands in for one, and a form where two fields are
+   visibly different kinds of control is the problem these replaced.
    -------------------------------------------------------------------------*/
 
-.datepicker {
+.picker {
   position: relative;
 }
 
-.datepicker-trigger {
+.picker-trigger {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -1055,13 +1056,117 @@ button.link.danger:hover:not(:disabled) {
   padding: 0.5rem 0.65rem;
 }
 
-.datepicker-trigger:hover {
+.picker-trigger:hover {
   border-color: var(--muted);
   background-color: var(--surface);
 }
 
-.datepicker-trigger.empty {
+.picker-trigger.empty {
   color: var(--faint);
+}
+
+.picker-pop {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  padding: 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+}
+
+/* Long enough to run past a 11rem field, and it should. A truncated class
+   name in the list you are choosing from defeats the list. */
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- The class picker ---------------------------------------------------*/
+
+/* The same caret the selects draw, so the two read as one family. */
+.picker-caret {
+  flex: none;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.picker-dot {
+  flex: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--c, var(--border-strong));
+}
+
+/* No class is a real choice, not a missing one — a hollow ring rather than a
+   coloured dot says that without inventing a ninth colour. */
+.picker-dot.hue-none {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--border-strong);
+}
+
+.picker-pop[role="listbox"] {
+  min-width: 100%;
+  max-width: 20rem;
+  max-height: 15rem;
+  overflow-y: auto;
+  padding: 0.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.picker-option {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-weight: 400;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  padding: 0.4rem 0.5rem;
+}
+
+.picker-option:hover {
+  background: var(--sunken);
+}
+
+.picker-option.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.picker-empty {
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+}
+
+/* ---- The date picker ----------------------------------------------------*/
+
+.datepicker-pop {
+  width: 17rem;
+}
+
+/* A phone has no room for a 17rem popover pinned to a field in the middle of
+   a form, so it centres under the trigger and takes the width it needs. */
+@media (max-width: 30rem) {
+  .datepicker-pop {
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(17rem, calc(100vw - 2rem));
+  }
 }
 
 .datepicker-icon {
@@ -1081,29 +1186,6 @@ button.link.danger:hover:not(:disabled) {
 
 .datepicker-clear:hover {
   color: var(--fg);
-}
-
-.datepicker-pop {
-  position: absolute;
-  z-index: 40;
-  top: calc(100% + 0.35rem);
-  left: 0;
-  width: 17rem;
-  padding: 0.7rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-md);
-}
-
-/* A phone has no room for a 17rem popover pinned to a field in the middle of
-   a form, so it centres under the trigger and takes the width it needs. */
-@media (max-width: 30rem) {
-  .datepicker-pop {
-    left: 50%;
-    transform: translateX(-50%);
-    width: min(17rem, calc(100vw - 2rem));
-  }
 }
 
 .datepicker-head {

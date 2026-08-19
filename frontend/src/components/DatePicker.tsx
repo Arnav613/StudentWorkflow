@@ -127,14 +127,14 @@ export default function DatePicker({
   }
 
   return (
-    <div className="datepicker" ref={wrap}>
+    <div className="picker" ref={wrap}>
       <button
         // Every button in here is type="button". This lives inside the add-task
         // form, and a bare <button> submits it — picking a month would have
         // created the task.
         type="button"
         ref={trigger}
-        className={`datepicker-trigger${value ? "" : " empty"}`}
+        className={`picker-trigger${value ? "" : " empty"}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
@@ -170,7 +170,7 @@ export default function DatePicker({
       </button>
 
       {open && (
-        <div className="datepicker-pop" role="dialog" aria-label="Choose a date">
+        <div className="picker-pop datepicker-pop" role="dialog" aria-label="Choose a date">
           <div className="datepicker-head">
             <button
               type="button"

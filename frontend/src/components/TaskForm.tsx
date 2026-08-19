@@ -2,6 +2,7 @@ import { useState } from "react";
 import * as db from "../lib/db";
 import { toast } from "../lib/toast";
 import DatePicker from "./DatePicker";
+import ClassPicker from "./ClassPicker";
 import type { DataStore } from "../hooks/useData";
 
 /**
@@ -89,19 +90,14 @@ export default function TaskForm({ store }: { store: DataStore }) {
             onChange={(e) => setTime(e.target.value)}
           />
         </label>
-        <label>
+        <div className="field">
           <span className="label">Class</span>
-          <select value={classId} onChange={(e) => setClassId(e.target.value)}>
-            <option value="">No class</option>
-            {classes
-              .filter((c) => !c.hidden)
-              .map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-          </select>
-        </label>
+          <ClassPicker
+            classes={classes.filter((c) => !c.hidden)}
+            value={classId}
+            onChange={setClassId}
+          />
+        </div>
         <div className="field-submit">
           <button disabled={busy || !title.trim()}>
             {busy ? "Adding…" : "Add task"}
