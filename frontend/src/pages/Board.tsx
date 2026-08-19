@@ -4,6 +4,7 @@ import { useData } from "../hooks/useData";
 import ClassManager from "../components/ClassManager";
 import TaskForm from "../components/TaskForm";
 import TaskList from "../components/TaskList";
+import ClassroomProbe from "../components/ClassroomProbe";
 
 type BackendState =
   | { kind: "idle" }
@@ -55,6 +56,7 @@ export default function Board({
           <ClassManager store={store} />
           <TaskForm store={store} />
           <TaskList store={store} />
+          <ClassroomProbe />
         </main>
       )}
     </div>

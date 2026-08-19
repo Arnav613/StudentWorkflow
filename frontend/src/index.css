@@ -238,3 +238,13 @@ button.link.danger {
 .dot-blue   { --dot: #3b82f6; }
 .dot-violet { --dot: #8b5cf6; }
 .dot-pink   { --dot: #ec4899; }
+
+.pre {
+  background: var(--border);
+  border-radius: 8px;
+  padding: 0.6rem;
+  overflow-x: auto;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
