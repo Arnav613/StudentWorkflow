@@ -25,6 +25,18 @@ export default function ClassroomPanel({
 }) {
   const { status, busy, error, connect } = useClassroom(session, onSynced);
 
+  // Nothing until the status is actually known. `connected` defaults to
+  // false, so during the first round trip — which wakes a sleeping Render and
+  // can take a second — the Connect panel was rendering for a moment on every
+  // reload of an already-connected account, then vanishing. A box that
+  // appears and leaves on its own is worse than a slightly later one: it
+  // reads as a glitch, and for that second it says the opposite of the truth.
+  //
+  // An unreachable server is the exception. Then the status stays unknown for
+  // good, and showing nothing would leave someone who has never connected
+  // with no way in.
+  if (!status && !error) return null;
+
   const connected = status?.connected ?? false;
   const needsReconnect = status?.needs_reconnect ?? false;
 
