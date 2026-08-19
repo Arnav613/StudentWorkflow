@@ -1257,15 +1257,6 @@ button.link.danger:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-/* The connection, when it is working, is one line rather than a panel. */
-.classroom-line {
-  margin: 0;
-}
-
-.classroom-warning {
-  display: block;
-}
-
 /* ---------------------------------------------------------------------------
    Phase 02: Classroom
    -------------------------------------------------------------------------*/

@@ -5,7 +5,6 @@ import {
   isReconnectError,
   syncClassroom,
   type ConnectionStatus,
-  type SyncReport,
 } from "../lib/api";
 import { connectClassroom } from "../lib/supabase";
 import { handleClassroomRedirect } from "../lib/classroomHandoff";
@@ -44,7 +43,6 @@ function shouldSyncOnOpen(status: ConnectionStatus | null): boolean {
  */
 export function useClassroom(session: Session, onSynced: () => void) {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
-  const [report, setReport] = useState<SyncReport | null>(null);
   const [busy, setBusy] = useState<string | null>("Checking Classroom…");
   const [error, setError] = useState<string | null>(null);
 
@@ -64,7 +62,10 @@ export function useClassroom(session: Session, onSynced: () => void) {
       setBusy(label);
       setError(null);
       try {
-        setReport(await syncClassroom());
+        // The report is not kept. Nothing renders it any more: the result of
+        // a sync is the board, and a count of what changed was a second
+        // description of a screen the user is already looking at.
+        await syncClassroom();
         onSynced();
       } catch (e) {
         // A 409 is not an error to apologise for — the weekly token expiry in
@@ -146,5 +147,5 @@ export function useClassroom(session: Session, onSynced: () => void) {
   // who needs it; what is gone is a destructive control sitting permanently
   // under a class grid, where the only people who ever pressed it did so by
   // accident.
-  return { status, report, busy, error, connect, sync, refreshStatus };
+  return { status, busy, error, connect, sync, refreshStatus };
 }
