@@ -1,0 +1,27 @@
+# Render free tier. Note that it sleeps when idle: the first request after a
+# quiet period takes ~30s, which the frontend must show as a loading state.
+services:
+  - type: web
+    name: ashoka-dashboard-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ALLOWED_EMAIL_DOMAIN
+        value: ashoka.edu.in
+      # Phase 05. Flip to true only once IT allowlists the OAuth client.
+      - key: CLASSROOM_ENABLED
+        value: "false"

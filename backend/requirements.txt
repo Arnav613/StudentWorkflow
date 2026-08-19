@@ -1,0 +1,9 @@
+# Python 3.14. Note the pydantic floor: 2.11 and earlier ship no cp314 wheel,
+# so pip falls back to compiling pydantic-core from Rust source and fails.
+fastapi>=0.118.0
+uvicorn[standard]>=0.37.0
+pydantic>=2.12
+pydantic-settings>=2.11.0
+pyjwt>=2.10.1
+httpx>=0.28.1
+python-dotenv>=1.1.1
