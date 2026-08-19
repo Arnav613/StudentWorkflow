@@ -1,5 +1,9 @@
 import type { Session } from "@supabase/supabase-js";
 import { signOut } from "../lib/supabase";
+import { useData } from "../hooks/useData";
+import ClassManager from "../components/ClassManager";
+import TaskForm from "../components/TaskForm";
+import TaskList from "../components/TaskList";
 
 type BackendState =
   | { kind: "idle" }
@@ -8,9 +12,8 @@ type BackendState =
   | { kind: "error"; message: string };
 
 /**
- * Phase 00 placeholder. Phase 02 turns this into the real Do / Doing / Done
- * board; for now it exists to prove the full chain end to end — Google, then
- * Supabase, then our own JWT check on the backend.
+ * Phase 01: classes and tasks by hand, as a flat list.
+ * Phase 02 turns this into the draggable Do / Doing / Done board.
  */
 export default function Board({
   session,
@@ -19,6 +22,8 @@ export default function Board({
   session: Session;
   backend: BackendState;
 }) {
+  const store = useData(session.user.id);
+
   return (
     <div className="page">
       <header className="topbar">
@@ -27,31 +32,31 @@ export default function Board({
         <button onClick={() => signOut()}>Sign out</button>
       </header>
 
-      <main>
-        <h1>You are signed in.</h1>
-
-        {backend.kind === "checking" && (
-          // Render's free tier sleeps. A cold start is ~30s, and without this
-          // line every first open of the day reads as a broken app.
-          <p className="muted">
-            Waking the server… the first request after a quiet spell can take
-            up to a minute.
-          </p>
-        )}
-
-        {backend.kind === "ok" && (
-          <p className="ok">API reached and token verified as {backend.email}.</p>
-        )}
-
-        {backend.kind === "error" && (
-          <p className="error">API error: {backend.message}</p>
-        )}
-
-        <p className="muted">
-          Next up: classes and tasks by hand (phase 01), then the board
-          (phase 02).
+      {/* The backend is not in the path of any CRUD here — that goes straight
+          to Supabase. This only reports whether the API is reachable, which
+          matters from phase 05 on. A sleeping Render must not read as a
+          broken dashboard. */}
+      {backend.kind === "error" && (
+        <p className="muted small">
+          Background API unreachable ({backend.message}). Your tasks still work
+          — nothing on this page depends on it yet.
         </p>
-      </main>
+      )}
+
+      {store.loading ? (
+        <p className="muted">Loading your dashboard…</p>
+      ) : store.error ? (
+        <div className="panel">
+          <p className="error">{store.error}</p>
+          <button onClick={() => store.refresh()}>Try again</button>
+        </div>
+      ) : (
+        <main className="stack">
+          <ClassManager store={store} />
+          <TaskForm store={store} />
+          <TaskList store={store} />
+        </main>
+      )}
     </div>
   );
 }
