@@ -81,13 +81,95 @@ export function daysUntilArchive(task: Task, now = Date.now()): number | null {
   return Math.max(0, Math.ceil(left));
 }
 
-export function formatDue(due: string | null): string {
+/**
+ * Midnight means "that day", not "that instant".
+ *
+ * A task given a date and no time is stored at 00:00 local, so every such
+ * card used to read "Sat, 23 Aug, 12:00 AM" — a precise-looking timestamp
+ * asserting a deadline nobody set. The clock is shown only when someone
+ * actually put one there.
+ */
+function hasTime(d: Date): boolean {
+  return d.getHours() !== 0 || d.getMinutes() !== 0;
+}
+
+function clockOf(d: Date): string {
+  return d
+    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    .replace(":00", "");
+}
+
+/** Whole calendar days from today to `d` — 0 today, 1 tomorrow, -1 yesterday. */
+function dayDelta(d: Date, now: Date): number {
+  const a = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const b = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return Math.round((a - b) / 86_400_000);
+}
+
+/**
+ * The due date as a person would say it.
+ *
+ * Counted in calendar days rather than elapsed hours: something due at 9am
+ * tomorrow is "Tomorrow" even though it is fourteen hours away, because that
+ * is the answer to the question being asked. Past a week the relative form
+ * stops helping — "in 23 days" is not a date anyone can plan around — so it
+ * hands back to a real one.
+ */
+export function formatDue(due: string | null, now = new Date()): string {
   if (!due) return "No due date";
-  return new Date(due).toLocaleString(undefined, {
-    weekday: "short",
+  const d = new Date(due);
+  const delta = dayDelta(d, now);
+  const clock = hasTime(d) ? `, ${clockOf(d)}` : "";
+
+  if (delta === 0) return `Today${clock}`;
+  if (delta === 1) return `Tomorrow${clock}`;
+  if (delta === -1) return `Yesterday${clock}`;
+
+  if (delta > 1 && delta < 7) {
+    return `${d.toLocaleDateString(undefined, { weekday: "long" })}${clock}`;
+  }
+  if (delta < -1 && delta > -7) return `${-delta} days ago`;
+
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return d.toLocaleDateString(undefined, {
     day: "numeric",
     month: "short",
-    hour: "numeric",
-    minute: "2-digit",
+    ...(sameYear ? {} : { year: "numeric" }),
   });
+}
+
+/**
+ * How late something is, for the overdue line. Separate from formatDue
+ * because "Overdue · Yesterday" reads as a date and "3 days late" reads as a
+ * problem, and only the second one is the point of the red text.
+ */
+export function formatLate(due: string | null, now = new Date()): string {
+  if (!due) return "Overdue";
+  const delta = -dayDelta(new Date(due), now);
+  if (delta <= 0) return "Due today";
+  if (delta === 1) return "1 day late";
+  if (delta < 14) return `${delta} days late`;
+  return `${Math.floor(delta / 7)} weeks late`;
+}
+
+/** The unambiguous form, for a title attribute. Nothing guessed, nothing hidden. */
+export function formatDueExact(due: string | null): string {
+  if (!due) return "No due date";
+  const d = new Date(due);
+  return d.toLocaleString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    ...(hasTime(d) ? { hour: "numeric", minute: "2-digit" } : {}),
+  });
+}
+
+/** The next thing due in a set of tasks, or null. Drives the class cards. */
+export function nextDue(tasks: Task[]): Task | null {
+  const live = tasks.filter((t) => t.status !== "done" && t.due_at);
+  if (!live.length) return null;
+  return live.reduce((best, t) =>
+    Date.parse(t.due_at!) < Date.parse(best.due_at!) ? t : best,
+  );
 }

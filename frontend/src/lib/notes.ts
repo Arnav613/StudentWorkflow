@@ -153,3 +153,21 @@ async function deleteNoteImages(userId: string, noteId: string): Promise<void> {
     .remove(data.map((f) => `${prefix}/${f.name}`));
   if (removeError) throw removeError;
 }
+
+/**
+ * How many notes each class has, for the class cards.
+ *
+ * Ids only, counted in the browser. The alternative is one `head: true` count
+ * request per class, which turns a four-class semester into four round trips
+ * to render one grid. A note id is 36 bytes and nobody has enough notes for
+ * that to matter before the query itself does.
+ */
+export async function countNotesByClass(): Promise<Record<string, number>> {
+  const rows = unwrap(
+    await supabase.from("notes").select("class_id"),
+  ) as Array<{ class_id: string }>;
+
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r.class_id] = (out[r.class_id] ?? 0) + 1;
+  return out;
+}

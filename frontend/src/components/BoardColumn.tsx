@@ -28,11 +28,11 @@ export default function BoardColumn({
   return (
     <section
       ref={setNodeRef}
-      className={`column ${isOver ? "over" : ""}`}
+      className={`column column-${status} ${isOver ? "over" : ""}`}
       aria-label={label}
     >
       <h2>
-        {label} <span className="muted small">{count}</span>
+        {label} <span className="count">{count}</span>
       </h2>
       {count === 0 ? (
         <p className="muted small">{empty}</p>

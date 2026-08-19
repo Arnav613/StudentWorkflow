@@ -2,7 +2,15 @@ import { useState } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import * as db from "../lib/db";
 import type { Class, Task, TaskStatus } from "../lib/types";
-import { COLUMNS, daysUntilArchive, formatDue, isOverdue } from "../lib/board";
+import {
+  COLUMNS,
+  daysUntilArchive,
+  formatDue,
+  formatDueExact,
+  formatLate,
+  isOverdue,
+} from "../lib/board";
+import { toast, undoable } from "../lib/toast";
 import ChecklistEditor from "./ChecklistEditor";
 
 /**
@@ -19,12 +27,18 @@ export default function TaskCard({
   userId,
   onMove,
   onChanged,
+  onRemove,
+  onOpenClass,
 }: {
   task: Task;
   cls: Class | null;
   userId: string;
   onMove: (task: Task, status: TaskStatus) => void;
   onChanged: () => void;
+  onRemove?: (task: Task) => void;
+  /** Set on the all-classes board, absent inside a class — where it would
+      only ever navigate to the page you are already on. */
+  onOpenClass?: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -34,15 +48,35 @@ export default function TaskCard({
   const overdue = isOverdue(task);
   const archiveIn = daysUntilArchive(task);
 
+  async function remove() {
+    if (onRemove) return onRemove(task);
+    // Fallback for any caller that has not wired the optimistic path: still
+    // no confirm() box, still undoable, just without the list update.
+    undoable({
+      message: `Deleted "${task.title}"`,
+      apply: () => setOpen(false),
+      commit: async () => {
+        await db.deleteTask(task.id);
+        onChanged();
+      },
+      revert: () => onChanged(),
+      onError: () => toast("The task is still there", "info"),
+    });
+  }
+
   return (
     <li
       ref={setNodeRef}
       {...listeners}
       {...attributes}
-      className={`card ${isDragging ? "dragging" : ""} ${overdue ? "overdue" : ""}`}
+      className={`card ${cls ? `hue-${cls.color}` : "hue-none"} ${
+        isDragging ? "dragging" : ""
+      } ${overdue ? "overdue" : ""}`}
     >
       <div className="row">
-        <span className={`grow ${task.status === "done" ? "struck" : ""}`}>
+        <span
+          className={`grow card-title ${task.status === "done" ? "struck" : ""}`}
+        >
           {task.title}
         </span>
         <button
@@ -54,20 +88,32 @@ export default function TaskCard({
         </button>
       </div>
 
-      <div className="row small">
-        <span className={overdue ? "error" : "muted"}>
-          {overdue ? "Overdue · " : ""}
-          {formatDue(task.due_at)}
+      <div className="row card-meta">
+        <span
+          className={overdue ? "error" : "muted"}
+          title={formatDueExact(task.due_at)}
+        >
+          {overdue ? formatLate(task.due_at) : formatDue(task.due_at)}
         </span>
 
-        {cls && (
-          <span className="tag">
-            <span className={`dot dot-${cls.color}`} />
-            {cls.name}
-          </span>
-        )}
+        {cls &&
+          (onOpenClass ? (
+            <button
+              className="tag tag-hue tag-button"
+              onClick={() => onOpenClass(cls.id)}
+              title={`Open ${cls.name}`}
+            >
+              <span className="dot" />
+              {cls.name}
+            </button>
+          ) : (
+            <span className="tag tag-hue">
+              <span className="dot" />
+              {cls.name}
+            </span>
+          ))}
 
-        {task.source === "classroom" && <span className="tag dim">Classroom</span>}
+        {task.source === "classroom" && <span className="tag">Classroom</span>}
 
         {/* The promise phase 04 has to keep: a card that moved itself says so,
             and stops saying so the moment you move it back by hand. */}
@@ -105,15 +151,11 @@ export default function TaskCard({
 
           <ChecklistEditor taskId={task.id} userId={userId} />
 
-          <button
-            className="link danger"
-            onClick={async () => {
-              await db.deleteTask(task.id);
-              onChanged();
-            }}
-          >
-            Delete task
-          </button>
+          <div className="row end">
+            <button className="link danger" onClick={remove}>
+              Delete task
+            </button>
+          </div>
         </div>
       )}
     </li>

@@ -28,11 +28,25 @@ function when(iso: string): string {
  * assignment that prompted it, and hanging notes off tasks would send them to
  * the archive along with the work.
  */
-export default function NotesPanel({ store }: { store: DataStore }) {
+export default function NotesPanel({
+  store,
+  classId: fixedClassId,
+}: {
+  store: DataStore;
+  /**
+   * Set when this is a class's own Notes tab. The picker disappears: the
+   * page already says which class you are in, and offering to switch course
+   * from inside one is how you end up writing Tuesday's lecture into
+   * Thursday's notebook.
+   */
+  classId?: string;
+}) {
   const { classes, userId } = store;
   const visible = classes.filter((c) => !c.hidden);
 
-  const [classId, setClassId] = useState<string | null>(null);
+  const [pickedClassId, setPickedClassId] = useState<string | null>(null);
+  const classId = fixedClassId ?? pickedClassId;
+  const setClassId = setPickedClassId;
   const [list, setList] = useState<NoteSummary[]>([]);
   const [openNote, setOpenNote] = useState<Note | null>(null);
   const [loading, setLoading] = useState(false);
@@ -43,8 +57,8 @@ export default function NotesPanel({ store }: { store: DataStore }) {
   // render and would re-run this effect forever.
   const firstClassId = visible[0]?.id;
   useEffect(() => {
-    if (classId === null && firstClassId) setClassId(firstClassId);
-  }, [classId, firstClassId]);
+    if (!fixedClassId && classId === null && firstClassId) setClassId(firstClassId);
+  }, [fixedClassId, classId, firstClassId]);
 
   const loadList = useCallback(async (cid: string) => {
     setLoading(true);
@@ -123,10 +137,12 @@ export default function NotesPanel({ store }: { store: DataStore }) {
 
   return (
     <section className="panel">
-      <div className="row">
+      <div className="row panel-head">
         <h2 className="grow">Notes</h2>
-        <ClassPicker classes={visible} value={classId} onChange={setClassId} />
-        <button onClick={create} disabled={!classId}>
+        {!fixedClassId && (
+          <ClassPicker classes={visible} value={classId} onChange={setClassId} />
+        )}
+        <button className="btn-quiet" onClick={create} disabled={!classId}>
           New note
         </button>
       </div>
@@ -168,7 +184,7 @@ export default function NotesPanel({ store }: { store: DataStore }) {
               onDeleted={onDeleted}
             />
           ) : (
-            <p className="muted">Pick a note, or start a new one.</p>
+            <p className="empty-page">Pick a note, or start a new one.</p>
           )}
         </div>
       </div>

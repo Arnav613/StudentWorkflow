@@ -5,6 +5,7 @@ import { getConfig, getMe, ApiError } from "./lib/api";
 import { rememberProviderToken } from "./lib/classroomHandoff";
 import Login from "./pages/Login";
 import Board from "./pages/Board";
+import Toaster from "./components/Toaster";
 
 type BackendState =
   | { kind: "idle" }
@@ -62,26 +63,38 @@ export default function App() {
       );
   }, [session, wrongDomain]);
 
-  if (loadingSession) {
-    return <p className="centered muted">Loading…</p>;
-  }
+  return (
+    <>
+      {screen()}
+      {/* Mounted outside the screen switch: a toast raised by a sign-out or a
+          failed load must survive the render that replaced the component
+          which raised it. */}
+      <Toaster />
+    </>
+  );
 
-  if (!session) {
-    return <Login />;
-  }
+  function screen() {
+    if (loadingSession) {
+      return <p className="centered muted">Loading…</p>;
+    }
 
-  if (wrongDomain) {
-    return (
-      <div className="centered">
-        <h1>Wrong account</h1>
-        <p className="muted">
-          You signed in as <strong>{email}</strong>. This dashboard is for
-          @{ALLOWED_DOMAIN} accounts.
-        </p>
-        <button onClick={() => signOut()}>Sign out and try again</button>
-      </div>
-    );
-  }
+    if (!session) {
+      return <Login />;
+    }
 
-  return <Board session={session} backend={backend} />;
+    if (wrongDomain) {
+      return (
+        <div className="centered">
+          <h1>Wrong account</h1>
+          <p className="muted">
+            You signed in as <strong>{email}</strong>. This dashboard is for
+            @{ALLOWED_DOMAIN} accounts.
+          </p>
+          <button onClick={() => signOut()}>Sign out and try again</button>
+        </div>
+      );
+    }
+
+    return <Board session={session} backend={backend} />;
+  }
 }

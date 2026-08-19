@@ -1,5 +1,6 @@
 import { useState } from "react";
 import * as db from "../lib/db";
+import { toast } from "../lib/toast";
 import type { DataStore } from "../hooks/useData";
 
 /**
@@ -12,34 +13,32 @@ import type { DataStore } from "../hooks/useData";
 export default function TaskForm({ store }: { store: DataStore }) {
   const { classes, refresh, userId } = store;
   const [title, setTitle] = useState("");
-  const [dueAt, setDueAt] = useState("");
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("");
   const [classId, setClassId] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
     setBusy(true);
-    setError(null);
     try {
       await db.createTask({
         user_id: userId,
         title: title.trim(),
         description: description.trim() || null,
-        // datetime-local yields wall-clock text with no zone. new Date() reads
-        // it as local time, which is what the user typed, and toISOString
-        // hands Postgres proper UTC for the timestamptz column.
-        due_at: dueAt ? new Date(dueAt).toISOString() : null,
+        due_at: dueAtFrom(date, time),
         class_id: classId || null,
       });
+      toast("Task added", "success");
       setTitle("");
-      setDueAt("");
+      setDate("");
+      setTime("");
       setDescription("");
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not add task");
+      toast(e instanceof Error ? e.message : "Could not add task", "error");
     } finally {
       setBusy(false);
     }
@@ -48,47 +47,81 @@ export default function TaskForm({ store }: { store: DataStore }) {
   return (
     <section className="panel">
       <h2>Add a task</h2>
-      <form className="stack" onSubmit={submit}>
-        <input
-          placeholder="What needs doing?"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          required
-        />
-        <div className="row">
-          <label className="grow">
-            <span className="label">Due</span>
-            <input
-              type="datetime-local"
-              value={dueAt}
-              onChange={(e) => setDueAt(e.target.value)}
-            />
-          </label>
-          <label className="grow">
-            <span className="label">Class</span>
-            <select value={classId} onChange={(e) => setClassId(e.target.value)}>
-              <option value="">No class</option>
-              {classes
-                .filter((c) => !c.hidden)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-            </select>
-          </label>
+      <form className="task-form" onSubmit={submit}>
+        <div className="field-title">
+          <input
+            placeholder="What needs doing?"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+          />
         </div>
-        <textarea
-          placeholder="Notes (optional)"
-          rows={2}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-        <button disabled={busy || !title.trim()}>
-          {busy ? "Adding…" : "Add task"}
-        </button>
-        {error && <p className="error">{error}</p>}
+        <label className="field-notes">
+          <span className="label">Notes (optional)</span>
+          <input
+            placeholder="Anything worth remembering"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </label>
+        <label>
+          <span className="label">Due</span>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </label>
+        <label>
+          <span className="label">Time (optional)</span>
+          <input
+            type="time"
+            value={time}
+            disabled={!date}
+            onChange={(e) => setTime(e.target.value)}
+          />
+        </label>
+        <label>
+          <span className="label">Class</span>
+          <select value={classId} onChange={(e) => setClassId(e.target.value)}>
+            <option value="">No class</option>
+            {classes
+              .filter((c) => !c.hidden)
+              .map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+          </select>
+        </label>
+        <div className="field-submit">
+          <button disabled={busy || !title.trim()}>
+            {busy ? "Adding…" : "Add task"}
+          </button>
+        </div>
       </form>
     </section>
   );
+}
+
+/**
+ * A date, and a time only if one was actually chosen.
+ *
+ * Split into two inputs rather than one datetime-local, because almost every
+ * deadline a student types is a day, not an instant, and datetime-local
+ * refuses to submit a date without also being given a clock. The old control
+ * therefore made everyone invent a time, and the invented value then appeared
+ * on every card as an authoritative-looking "12:00 AM".
+ *
+ * Empty time means midnight, which is what a whole-day deadline means: due by
+ * the end of that day, and overdue the moment the next one starts. formatDue
+ * knows to print no clock for exactly this value.
+ *
+ * Built as local wall-clock text and handed to `new Date`, which reads it in
+ * the user's own zone; toISOString then gives Postgres proper UTC for the
+ * timestamptz column.
+ */
+function dueAtFrom(date: string, time: string): string | null {
+  if (!date) return null;
+  return new Date(`${date}T${time || "00:00"}`).toISOString();
 }

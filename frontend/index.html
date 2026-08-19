@@ -3,6 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      An SVG favicon: one file, sharp at every size, and the only format that
+      can carry the app's gradient without shipping four PNGs. The .ico is the
+      fallback for browsers that ignore SVG icons; theme-color tints the
+      address bar on mobile, which is the cheapest "this is an app" signal
+      there is.
+    -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <meta name="theme-color" content="#5b4bdb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d0e16" media="(prefers-color-scheme: dark)" />
+
+    <meta name="description" content="Every deadline, note and link for every class, in one place." />
+
+    <!-- Replaced per view at runtime — see lib/title.ts. This is what shows
+         while the bundle is still loading. -->
     <title>Student Dashboard</title>
   </head>
   <body>

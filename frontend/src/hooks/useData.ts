@@ -71,7 +71,23 @@ export function useData(userId: string) {
     void refresh();
   }, [refresh]);
 
-  return { classes, tasks, loading, error, refresh, moveTask, setError, userId };
+  // setClasses/setTasks are exposed for one purpose: the undo path. A
+  // destructive action takes the row off the screen straight away and holds
+  // the delete for a few seconds (see lib/toast), so the component doing it
+  // needs to be able to put the row back without a round trip. Ordinary
+  // writes still go through db.* and refresh().
+  return {
+    classes,
+    tasks,
+    loading,
+    error,
+    refresh,
+    moveTask,
+    setError,
+    setClasses,
+    setTasks,
+    userId,
+  };
 }
 
 export type DataStore = ReturnType<typeof useData>;

@@ -102,6 +102,23 @@ export const syncClassroom = () =>
 export const disconnectClassroom = () =>
   api<{ disconnected: boolean }>("/classroom/disconnect", { method: "DELETE" });
 
+export type ClassroomCourse = {
+  id: string;
+  name: string;
+  section: string | null;
+  /** Set when a class already points at this course. */
+  linked_class_id: string | null;
+};
+
+/**
+ * The courses behind the link picker on a new class.
+ *
+ * Hits Google, unlike /status, so it is fetched only when someone opens the
+ * form that needs it — not on every app open.
+ */
+export const getClassroomCourses = () =>
+  api<ClassroomCourse[]>("/classroom/courses");
+
 /** 409 is the reconnect signal, not a failure. See routers/classroom.py. */
 export const isReconnectError = (e: unknown) =>
   e instanceof ApiError && e.status === 409;

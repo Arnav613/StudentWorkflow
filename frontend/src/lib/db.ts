@@ -14,7 +14,7 @@
  */
 
 import { supabase } from "./supabase";
-import type { Class, ChecklistItem, Task, TaskStatus } from "./types";
+import type { Class, ChecklistItem, ClassLink, Task, TaskStatus } from "./types";
 
 function unwrap<T>({ data, error }: { data: T | null; error: unknown }): T {
   if (error) throw error;
@@ -37,6 +37,15 @@ export async function createClass(input: {
   color?: string;
   professor?: string | null;
   meeting_info?: string | null;
+  /**
+   * Linking at creation time, from the picker on the new-class form.
+   *
+   * Sync can also link a class it did not create, but only by matching names
+   * exactly — so a course called "CS-2212 (Monsoon 2026)" never finds the
+   * class you named "Algorithms". Choosing the course here is the version
+   * that does not depend on guessing what you would have typed.
+   */
+  google_course_id?: string | null;
 }): Promise<Class> {
   return unwrap(
     await supabase.from("classes").insert(input).select().single(),
@@ -244,4 +253,72 @@ export async function updateChecklistItem(
 export async function deleteChecklistItem(id: string): Promise<void> {
   const { error } = await supabase.from("checklist_items").delete().eq("id", id);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Class links — the Docs tab. See migration 0004.
+// ---------------------------------------------------------------------------
+
+export async function listClassLinks(classId: string): Promise<ClassLink[]> {
+  return unwrap(
+    await supabase
+      .from("class_links")
+      .select("*")
+      .eq("class_id", classId)
+      .order("position"),
+  );
+}
+
+/**
+ * Save a link.
+ *
+ * The URL is normalised here rather than in the database: someone pasting
+ * `drive.google.com/...` without a scheme means https, and storing it raw
+ * would produce an anchor the browser resolves against our own origin — a
+ * link that silently goes nowhere. A check constraint cannot fix that up, it
+ * can only reject it.
+ */
+export async function createClassLink(input: {
+  user_id: string;
+  class_id: string;
+  title: string;
+  url: string;
+  position: number;
+}): Promise<ClassLink> {
+  return unwrap(
+    await supabase
+      .from("class_links")
+      .insert({ ...input, url: normaliseUrl(input.url) })
+      .select()
+      .single(),
+  );
+}
+
+export async function updateClassLink(
+  id: string,
+  patch: Partial<Pick<ClassLink, "title" | "url" | "position">>,
+): Promise<ClassLink> {
+  const next = patch.url ? { ...patch, url: normaliseUrl(patch.url) } : patch;
+  return unwrap(
+    await supabase.from("class_links").update(next).eq("id", id).select().single(),
+  );
+}
+
+export async function deleteClassLink(id: string): Promise<void> {
+  const { error } = await supabase.from("class_links").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/**
+ * Assume https for a bare host, and leave anything with a scheme alone.
+ *
+ * Only http and https survive. A `javascript:` or `data:` URL typed into this
+ * box would otherwise become a link the user clicks in their own session —
+ * the anchor carries rel="noreferrer" either way, but neither of those
+ * schemes is a document and both are a script-execution vector.
+ */
+export function normaliseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return `https://${trimmed}`;
+  return /^https?:/i.test(trimmed) ? trimmed : `https://${trimmed.replace(/^[^:]+:\/*/, "")}`;
 }

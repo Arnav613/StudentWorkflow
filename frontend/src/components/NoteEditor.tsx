@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PartialBlock } from "@blocknote/core";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
-import "@blocknote/core/fonts/inter.css";
+// Inter is loaded once in main.tsx — app-wide, not just inside the editor.
 import "@blocknote/mantine/style.css";
 import * as notes from "../lib/notes";
 import type { Note } from "../lib/types";

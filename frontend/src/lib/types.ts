@@ -80,3 +80,21 @@ export type Note = {
   created_at: string;
   updated_at: string;
 };
+
+/**
+ * A link pinned to a class — syllabus, Drive folder, course page.
+ *
+ * `title` may be empty: pasting a URL and naming it later is the common
+ * gesture, and refusing the paste until a name exists would put a form in
+ * front of a one-second action. The UI falls back to the hostname.
+ */
+export type ClassLink = {
+  id: string;
+  user_id: string;
+  class_id: string;
+  title: string;
+  url: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};

@@ -9,9 +9,11 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import * as db from "../lib/db";
 import type { Class, Task, TaskStatus } from "../lib/types";
 import type { DataStore } from "../hooks/useData";
 import { COLUMNS, groupByColumn } from "../lib/board";
+import { toast, undoable } from "../lib/toast";
 import BoardColumn from "./BoardColumn";
 import TaskCard from "./TaskCard";
 
@@ -28,8 +30,17 @@ const EMPTY: Record<TaskStatus, string> = {
  * question was "do real deadlines arrive"; the board is the right thing now
  * that they do, because the question became "what do I do next".
  */
-export default function TaskBoard({ store }: { store: DataStore }) {
-  const { tasks, classes, refresh, moveTask, userId } = store;
+export default function TaskBoard({
+  store,
+  emptyFor,
+  onOpenClass,
+}: {
+  store: DataStore;
+  /** Named when the board is showing one class, so the empty state can say so. */
+  emptyFor?: string;
+  onOpenClass?: (id: string) => void;
+}) {
+  const { tasks, classes, refresh, moveTask, setTasks, userId } = store;
   const [dragging, setDragging] = useState<Task | null>(null);
 
   // Distance, not delay: a drag must not start on a click aimed at the Open
@@ -62,13 +73,32 @@ export default function TaskBoard({ store }: { store: DataStore }) {
     void moveTask(task, status, positionFor(columns[status]));
   }
 
+  /**
+   * Deleting a card. Optimistic with a five-second hold, not a confirm() box
+   * — see lib/toast. The row leaves the column immediately, which is the
+   * feedback that matters, and the database write is what waits.
+   */
+  function remove(task: Task) {
+    const previous = tasks;
+    undoable({
+      message: `Deleted "${task.title}"`,
+      apply: () => setTasks((prev) => prev.filter((t) => t.id !== task.id)),
+      commit: () => db.deleteTask(task.id),
+      revert: () => setTasks(previous),
+      onError: () => toast("The task is still there", "info"),
+    });
+  }
+
   if (tasks.length === 0) {
     return (
-      <section className="panel">
-        <h2>Board</h2>
+      <section className="panel empty-state">
+        <p className="empty-title">
+          {emptyFor ? `Nothing for ${emptyFor} yet` : "Nothing on the board"}
+        </p>
         <p className="muted">
-          Nothing yet. Add your deadlines above — coursework, club meetings,
-          laundry.
+          {emptyFor
+            ? "Deadlines you add on the To do tab, and anything Classroom imports for this course, will show up here."
+            : "Add your deadlines above — coursework, club meetings, laundry."}
         </p>
       </section>
     );
@@ -93,6 +123,8 @@ export default function TaskBoard({ store }: { store: DataStore }) {
                 userId={userId}
                 onMove={(t, s) => void moveTask(t, s, positionFor(columns[s]))}
                 onChanged={refresh}
+                onRemove={remove}
+                onOpenClass={onOpenClass}
               />
             ))}
           </BoardColumn>
