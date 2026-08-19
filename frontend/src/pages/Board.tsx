@@ -1,3 +1,4 @@
+import { Suspense, lazy, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { signOut } from "../lib/supabase";
 import { useData } from "../hooks/useData";
@@ -6,19 +7,36 @@ import TaskForm from "../components/TaskForm";
 import TaskBoard from "../components/TaskBoard";
 import ClassroomPanel from "../components/ClassroomPanel";
 
+/*
+ * The editor is by far the largest thing this app ships — bigger than the
+ * whole rest of the bundle — and the board is what opens first every time.
+ * Split here rather than tuning chunks in the build config: the boundary that
+ * matters is a screen the user may never visit today, and that is a fact about
+ * the app, not about Rollup.
+ */
+const NotesPanel = lazy(() => import("../components/NotesPanel"));
+
 type BackendState =
   | { kind: "idle" }
   | { kind: "checking" }
   | { kind: "ok"; email: string; classroomEnabled: boolean }
   | { kind: "error"; message: string };
 
+type View = "board" | "notes";
+
 /**
- * The page: classes, an add-task form, and the Do / Doing / Done board.
+ * The page: classes, an add-task form, and the Do / Doing / Done board — plus,
+ * since phase 05, the notebooks behind a second tab.
  *
  * Phase 03 replaced the flat task list with the board. Everything above it
  * stayed — creating a class and typing a deadline are still the two things
  * done most often, and burying them behind the board to make it look tidier
  * would trade the app's most common action for a screenshot.
+ *
+ * Two tabs and no router. The app has exactly two screens and one shared
+ * store; a route table would add a dependency, a redirect on load, and a
+ * second source of truth about which screen is up, and buy nothing back. It
+ * costs one state hook to change later.
  */
 export default function Board({
   session,
@@ -28,11 +46,26 @@ export default function Board({
   backend: BackendState;
 }) {
   const store = useData(session.user.id);
+  const [view, setView] = useState<View>("board");
 
   return (
     <div className="page">
       <header className="topbar">
         <strong>Student Dashboard</strong>
+        <nav className="tabs">
+          <button
+            className={`tab${view === "board" ? " current" : ""}`}
+            onClick={() => setView("board")}
+          >
+            Board
+          </button>
+          <button
+            className={`tab${view === "notes" ? " current" : ""}`}
+            onClick={() => setView("notes")}
+          >
+            Notes
+          </button>
+        </nav>
         <span className="muted">{session.user.email}</span>
         <button onClick={() => signOut()}>Sign out</button>
       </header>
@@ -56,11 +89,19 @@ export default function Board({
         </div>
       ) : (
         <main className="stack">
-          <ClassManager store={store} />
-          <TaskForm store={store} />
-          <TaskBoard store={store} />
-          {backend.kind === "ok" && backend.classroomEnabled && (
-            <ClassroomPanel session={session} onSynced={store.refresh} />
+          {view === "board" ? (
+            <>
+              <ClassManager store={store} />
+              <TaskForm store={store} />
+              <TaskBoard store={store} />
+              {backend.kind === "ok" && backend.classroomEnabled && (
+                <ClassroomPanel session={session} onSynced={store.refresh} />
+              )}
+            </>
+          ) : (
+            <Suspense fallback={<p className="muted">Loading the editor…</p>}>
+              <NotesPanel store={store} />
+            </Suspense>
           )}
         </main>
       )}

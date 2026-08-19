@@ -352,3 +352,121 @@ button.link.danger {
 .card .task-detail {
   cursor: auto;
 }
+
+/* --- Phase 05: notes ----------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tab {
+  background: none;
+  color: var(--muted);
+  border-color: transparent;
+  padding: 0.35rem 0.75rem;
+}
+
+.tab.current {
+  color: var(--fg);
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/*
+ * List beside page, and one column on a phone. The list is fixed-width rather
+ * than a fraction: it holds titles and a date, and letting it grow with the
+ * window only ever steals room from the thing being written in.
+ */
+.notebook {
+  display: grid;
+  grid-template-columns: 14rem 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 40rem) {
+  .notebook {
+    grid-template-columns: 1fr;
+  }
+}
+
+.notebook-list {
+  border-right: 1px solid var(--border);
+  padding-right: 0.75rem;
+  min-width: 0;
+}
+
+@media (max-width: 40rem) {
+  .notebook-list {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 0 0 0.75rem;
+  }
+}
+
+.notebook-page {
+  min-width: 0;
+}
+
+.note-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: none;
+  color: inherit;
+  border-color: transparent;
+  padding: 0.35rem 0.5rem;
+}
+
+.note-item .grow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-item.current {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.note-editor-head {
+  margin-bottom: 0.5rem;
+}
+
+/* The title is a heading that happens to be typeable. Chrome given to it is
+   chrome taken from the document underneath. */
+.note-title {
+  border-color: transparent;
+  font-size: 1.15rem;
+  font-weight: 600;
+  padding-left: 0.25rem;
+}
+
+.note-title:hover {
+  border-color: var(--border);
+}
+
+/*
+ * BlockNote ships its own light and dark themes and picks between them from
+ * prefers-color-scheme, the same signal the rest of this stylesheet uses — so
+ * the two agree without being wired together. What it does not know is the
+ * page's background, and its default white would leave a bright slab in a dark
+ * dashboard.
+ */
+.note-editor .bn-container,
+.note-editor .bn-editor {
+  background: transparent;
+}
+
+/* The editor's own gutter assumes a full-width page; inside a panel it pushes
+   the text off-centre. */
+.note-editor .bn-editor {
+  padding-inline: 0.25rem;
+}
+
+.note-editor .bn-container {
+  min-height: 18rem;
+}

@@ -59,3 +59,24 @@ export const CLASS_COLORS = [
 ] as const;
 
 export type ClassColor = (typeof CLASS_COLORS)[number];
+
+/**
+ * A note. `content` is a BlockNote document — an array of blocks — stored as
+ * jsonb rather than text or markdown, because the editor round-trips a tree
+ * and flattening it on every save would quietly lose whatever markdown has no
+ * syntax for (toggles, block ids, image widths).
+ *
+ * Typed `unknown[]` deliberately. BlockNote's own `Block[]` is generic over
+ * the editor's schema, and pulling that type through the data layer would tie
+ * every query in this file to the editor package. The editor validates its own
+ * document on load; nothing else in the app reads inside a block.
+ */
+export type Note = {
+  id: string;
+  user_id: string;
+  class_id: string;
+  title: string;
+  content: unknown[];
+  created_at: string;
+  updated_at: string;
+};
