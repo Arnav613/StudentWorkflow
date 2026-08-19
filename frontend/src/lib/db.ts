@@ -52,18 +52,45 @@ export async function updateClass(
   );
 }
 
-/**
- * Hiding, not deleting, is the normal way to retire a class — deleting one
- * nulls class_id on its tasks and loses the association permanently.
- */
-export async function setClassHidden(id: string, hidden: boolean): Promise<Class> {
-  return updateClass(id, { hidden });
-}
-
 export async function deleteClass(id: string): Promise<void> {
   const { error } = await supabase.from("classes").delete().eq("id", id);
   if (error) throw error;
 }
+
+// ---------------------------------------------------------------------------
+// Removing a class
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove a class for good: its tasks go with it (the foreign key cascades),
+ * and if it came from Classroom the course is tombstoned so the next sync
+ * does not import it straight back.
+ *
+ * The tombstone is written *before* the delete. Getting that order wrong
+ * leaves a window where the class is gone but nothing remembers it was
+ * refused — and a sync landing in that window undoes the whole thing.
+ *
+ * `dismissed_courses` is deliberately invisible in the UI: it is plumbing that
+ * makes a deletion stick, not a recycle bin. It holds a course id and name and
+ * nothing else. Undoing one is a delete in the SQL editor.
+ */
+export async function removeClass(
+  c: Pick<Class, "id" | "name" | "google_course_id"> & { user_id: string },
+): Promise<void> {
+  if (c.google_course_id) {
+    const { error } = await supabase.from("dismissed_courses").upsert(
+      {
+        user_id: c.user_id,
+        google_course_id: c.google_course_id,
+        name: c.name,
+      },
+      { onConflict: "user_id,google_course_id" },
+    );
+    if (error) throw error;
+  }
+  await deleteClass(c.id);
+}
+
 
 // ---------------------------------------------------------------------------
 // Tasks
@@ -74,7 +101,7 @@ export async function deleteClass(id: string): Promise<void> {
  * a finished task is a few hundred bytes and grade tracking wants it later.
  *
  * Sorting is due date first, with nulls last: an undated task should never
- * outrank something due tomorrow. Overdue-pinning is a phase 02 board
+ * outrank something due tomorrow. Overdue-pinning is a phase 03 board
  * concern, applied on top of this ordering rather than baked into it.
  */
 export async function listTasks(): Promise<Task[]> {
@@ -88,6 +115,34 @@ export async function listTasks(): Promise<Task[]> {
   );
 }
 
+/**
+ * Sweep finished tasks off the board a week after they were completed.
+ *
+ * Archived, never deleted: `archived_at` is set, the row stays. A finished
+ * task is a few hundred bytes, and grade tracking wants that history later.
+ *
+ * Run on load rather than by cron. Phase 04 brings a scheduler, but this
+ * belongs to the person looking at the board, not to a server — if nobody
+ * opens the app for a month there is nothing to tidy, and a sweep that only
+ * ever runs while someone is watching can never surprise them by having
+ * cleared the board overnight. It is one indexed UPDATE and the common case
+ * touches no rows.
+ */
+export async function archiveCompleted(
+  afterDays = 7,
+): Promise<number> {
+  const cutoff = new Date(Date.now() - afterDays * 86_400_000).toISOString();
+  const { data, error } = await supabase
+    .from("tasks")
+    .update({ archived_at: new Date().toISOString() })
+    .eq("status", "done")
+    .is("archived_at", null)
+    .lt("completed_at", cutoff)
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
+
 export async function createTask(input: {
   user_id: string;
   title: string;
@@ -96,8 +151,8 @@ export async function createTask(input: {
   class_id?: string | null;
   status?: TaskStatus;
 }): Promise<Task> {
-  // source is left to the column default of 'manual'. Phase 05 is the only
-  // thing that ever writes 'classroom', and it writes it explicitly.
+  // source is left to the column default of 'manual'. The backend sync is the
+  // only thing that ever writes 'classroom', and it writes it explicitly.
   return unwrap(await supabase.from("tasks").insert(input).select().single());
 }
 
@@ -115,19 +170,35 @@ export async function updateTask(
 /**
  * Moving a task by hand.
  *
- * Sets status_overridden so a later Classroom sync will not drag the card
- * back where it thinks it belongs. Harmless on manual tasks, which sync never
- * touches; essential on imported ones. Writing it here rather than in phase
- * 05 means there is one move-a-task path, not two that must agree.
+ * `status_overridden` is the flag that stops sync fighting you, and it is set
+ * far more narrowly than "the user touched this card". It means one specific
+ * thing: *you disagreed with a decision sync made*. So it is written only
+ * when a card that sync marked Done is dragged back out of Done.
+ *
+ * Setting it on every move would be the obvious version and the wrong one:
+ * dragging a fresh task Do → Doing is ordinary work, not an argument, and
+ * treating it as one would permanently stop that task ever auto-completing
+ * when you submit it on Classroom. The flag is never cleared once set —
+ * having stated a preference, you should not have to keep restating it.
+ *
+ * `position` is optional because it is only a tie-break: columns sort by due
+ * date, so dropping a dated task anywhere in a column lands it where its
+ * deadline says. Undated tasks are the only ones this argument moves.
+ *
+ * completed_at and archived_at are not written here — a database trigger sets
+ * completed_at on the way into 'done' and clears both on the way out, so
+ * dragging a card off Done also takes it back out of the archive queue.
  */
-export async function moveTask(id: string, status: TaskStatus): Promise<Task> {
+export async function moveTask(
+  task: Task,
+  status: TaskStatus,
+  position?: number,
+): Promise<Task> {
+  const patch: Record<string, unknown> = { status };
+  if (position !== undefined) patch.position = position;
+  if (task.auto_completed && status !== "done") patch.status_overridden = true;
   return unwrap(
-    await supabase
-      .from("tasks")
-      .update({ status, status_overridden: true })
-      .eq("id", id)
-      .select()
-      .single(),
+    await supabase.from("tasks").update(patch).eq("id", task.id).select().single(),
   );
 }
 

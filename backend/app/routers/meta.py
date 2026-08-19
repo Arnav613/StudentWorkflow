@@ -1,7 +1,7 @@
 """Health and identity — the two routes phase 00 needs to prove itself.
 
 /health is also what the hourly GitHub Action pings to wake Render before the
-real sync call, once phase 06 exists.
+real sync call, once phase 04's cron exists.
 """
 
 from fastapi import APIRouter, Depends
@@ -23,8 +23,8 @@ def client_config(settings: Settings = Depends(get_settings)) -> dict:
     """Flags the frontend needs before it can decide what to render.
 
     `classroom_enabled` is the switch that reveals the Connect Classroom
-    button. It lives on the server so turning it on is an env var on Render,
-    not a frontend redeploy.
+    button. It lives on the server so turning it off during a Google outage
+    is an env var on Render, not a frontend redeploy.
     """
     return {
         "classroom_enabled": settings.classroom_enabled,

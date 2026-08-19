@@ -22,6 +22,25 @@ services:
         sync: false
       - key: ALLOWED_EMAIL_DOMAIN
         value: ashoka.edu.in
-      # Phase 05. Flip to true only once IT allowlists the OAuth client.
+      # Classroom sync. Set false to hide the Connect button and refuse
+      # connect/sync, without a frontend redeploy.
       - key: CLASSROOM_ENABLED
-        value: "false"
+        value: "true"
+      # Only import courses whose name contains one of these (comma
+      # separated). Empty imports every non-archived course. Bump this at the
+      # start of each semester.
+      - key: CLASSROOM_TERM_FILTER
+        value: "Monsoon 2026"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      # Fernet key for refresh tokens at rest. Rotating this orphans every
+      # stored token — users are asked to reconnect, nothing is lost.
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      # Shared secret for the hourly GitHub Action (phase 04). Must match the
+      # CRON_SECRET repository secret exactly. Unset disables /classroom/cron/
+      # sync entirely rather than leaving it open.
+      - key: CRON_SECRET
+        sync: false

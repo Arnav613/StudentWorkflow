@@ -3,18 +3,22 @@ import { signOut } from "../lib/supabase";
 import { useData } from "../hooks/useData";
 import ClassManager from "../components/ClassManager";
 import TaskForm from "../components/TaskForm";
-import TaskList from "../components/TaskList";
-import ClassroomProbe from "../components/ClassroomProbe";
+import TaskBoard from "../components/TaskBoard";
+import ClassroomPanel from "../components/ClassroomPanel";
 
 type BackendState =
   | { kind: "idle" }
   | { kind: "checking" }
-  | { kind: "ok"; email: string }
+  | { kind: "ok"; email: string; classroomEnabled: boolean }
   | { kind: "error"; message: string };
 
 /**
- * Phase 01: classes and tasks by hand, as a flat list.
- * Phase 02 turns this into the draggable Do / Doing / Done board.
+ * The page: classes, an add-task form, and the Do / Doing / Done board.
+ *
+ * Phase 03 replaced the flat task list with the board. Everything above it
+ * stayed — creating a class and typing a deadline are still the two things
+ * done most often, and burying them behind the board to make it look tidier
+ * would trade the app's most common action for a screenshot.
  */
 export default function Board({
   session,
@@ -34,13 +38,12 @@ export default function Board({
       </header>
 
       {/* The backend is not in the path of any CRUD here — that goes straight
-          to Supabase. This only reports whether the API is reachable, which
-          matters from phase 05 on. A sleeping Render must not read as a
-          broken dashboard. */}
+          to Supabase. Only Classroom sync needs it, so a sleeping Render costs
+          you fresh coursework, not your dashboard. Say exactly that. */}
       {backend.kind === "error" && (
         <p className="muted small">
-          Background API unreachable ({backend.message}). Your tasks still work
-          — nothing on this page depends on it yet.
+          Sync server unreachable ({backend.message}). Your classes and tasks
+          still work — only Classroom import is affected.
         </p>
       )}
 
@@ -55,8 +58,10 @@ export default function Board({
         <main className="stack">
           <ClassManager store={store} />
           <TaskForm store={store} />
-          <TaskList store={store} />
-          <ClassroomProbe />
+          <TaskBoard store={store} />
+          {backend.kind === "ok" && backend.classroomEnabled && (
+            <ClassroomPanel session={session} onSynced={store.refresh} />
+          )}
         </main>
       )}
     </div>

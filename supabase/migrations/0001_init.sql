@@ -4,7 +4,7 @@
 -- migration. RLS is not retrofitted; a table without a policy is a table that
 -- leaks the moment the anon key reaches a browser.
 --
--- Columns marked CLASSROOM are unused until phase 05. They exist now because
+-- Columns marked CLASSROOM are unused until phase 02. They exist now because
 -- backfilling a discriminator across live user data is worse than a nullable
 -- column that sits empty for a few months.
 
@@ -225,7 +225,7 @@ create trigger notes_updated_at
   for each row execute function set_updated_at();
 
 -- ---------------------------------------------------------------------------
--- google_tokens — CLASSROOM. Empty until phase 05.
+-- google_tokens — CLASSROOM. Empty until phase 02.
 --
 -- The refresh token is encrypted by the backend before it ever arrives here;
 -- this table stores ciphertext and never sees the plaintext. No policy grants
@@ -249,7 +249,7 @@ create trigger google_tokens_updated_at
   for each row execute function set_updated_at();
 
 -- ---------------------------------------------------------------------------
--- sync_state — CLASSROOM. Empty until phase 05.
+-- sync_state — CLASSROOM. Empty until phase 02.
 -- ---------------------------------------------------------------------------
 
 create table sync_state (

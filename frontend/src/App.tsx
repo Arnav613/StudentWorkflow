@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase, signOut, ALLOWED_DOMAIN } from "./lib/supabase";
-import { getMe, ApiError } from "./lib/api";
+import { getConfig, getMe, ApiError } from "./lib/api";
+import { rememberProviderToken } from "./lib/classroomHandoff";
 import Login from "./pages/Login";
 import Board from "./pages/Board";
 
 type BackendState =
   | { kind: "idle" }
   | { kind: "checking" }
-  | { kind: "ok"; email: string }
+  | { kind: "ok"; email: string; classroomEnabled: boolean }
   | { kind: "error"; message: string };
 
 export default function App() {
@@ -23,6 +24,10 @@ export default function App() {
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      // Before setState, and on every event: this is the only place the
+      // Google refresh token is ever visible, and it does not survive being
+      // replaced by a session loaded from storage. See lib/classroomHandoff.
+      rememberProviderToken(s);
       setSession(s);
       setLoadingSession(false);
     });
@@ -38,8 +43,17 @@ export default function App() {
   useEffect(() => {
     if (!session || wrongDomain) return;
     setBackend({ kind: "checking" });
-    getMe()
-      .then((me) => setBackend({ kind: "ok", email: me.email }))
+    // Both in one round trip's worth of waiting: /config decides whether the
+    // Connect Classroom button exists at all, and there is no point rendering
+    // the dashboard twice for it.
+    Promise.all([getMe(), getConfig()])
+      .then(([me, config]) =>
+        setBackend({
+          kind: "ok",
+          email: me.email,
+          classroomEnabled: config.classroom_enabled,
+        }),
+      )
       .catch((e: unknown) =>
         setBackend({
           kind: "error",

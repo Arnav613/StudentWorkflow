@@ -7,3 +7,5 @@ pydantic-settings>=2.11.0
 pyjwt>=2.10.1
 httpx>=0.28.1
 python-dotenv>=1.1.1
+# Fernet, for the refresh tokens in google_tokens. See app/core/crypto.py.
+cryptography>=44.0

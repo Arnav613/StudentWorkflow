@@ -9,7 +9,7 @@ export type Class = {
   professor: string | null;
   meeting_info: string | null;
   hidden: boolean;
-  /** Null for every hand-made class. Set in phase 05 when linked or imported. */
+  /** Null for every hand-made class. Set when imported from, or linked to, a course. */
   google_course_id: string | null;
   created_at: string;
   updated_at: string;

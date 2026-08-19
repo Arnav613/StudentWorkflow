@@ -6,6 +6,8 @@
   --accent: #4f46e5;
   --error: #dc2626;
   --ok: #15803d;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
 
   color-scheme: light dark;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -20,6 +22,8 @@
     --accent: #818cf8;
     --error: #f87171;
     --ok: #4ade80;
+    --warn: #fbbf24;
+    --warn-bg: #26200e;
   }
 }
 
@@ -66,7 +70,7 @@ button:disabled {
 }
 
 .page {
-  max-width: 60rem;
+  max-width: 72rem;
   margin: 0 auto;
   padding: 1.5rem;
 }
@@ -247,4 +251,104 @@ button.link.danger {
   font-size: 0.78rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* --- Phase 02: Classroom ------------------------------------------------- */
+
+/*
+ * The reconnect banner. Deliberately warm rather than red: the weekly token
+ * expiry is expected behaviour with a one-click fix, and dressing it as an
+ * error teaches people to distrust an app that is working correctly.
+ */
+.banner {
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.banner strong {
+  color: var(--warn);
+}
+
+.banner .row {
+  margin-top: 0.6rem;
+}
+
+/* --- Phase 03: the board ------------------------------------------------- */
+
+/*
+ * Three columns on a desktop, one stacked column on a phone. The breakpoint
+ * is a minimum card width rather than a device size: below about 15rem a card
+ * with a class tag and a due date starts wrapping into unreadable confetti.
+ */
+.board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.column {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.75rem;
+  min-height: 6rem;
+}
+
+.column h2 {
+  font-size: 0.9rem;
+  margin: 0 0 0.6rem;
+}
+
+/* The drop target lights up, not the card being dragged: while the pointer is
+   moving, the question on screen is "where will this land", not "what am I
+   holding". */
+.column.over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.cards {
+  gap: 0.5rem;
+}
+
+.card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  background: var(--bg);
+  cursor: grab;
+  touch-action: manipulation;
+}
+
+/* Left edge only. An overdue card should be findable from the far side of the
+   screen without turning the column into a wall of red. */
+.card.overdue {
+  border-left: 3px solid var(--error);
+}
+
+/* The original stays in place at half strength while the overlay travels, so
+   the column keeps its shape and the card has somewhere to go back to. */
+.card.dragging {
+  opacity: 0.4;
+}
+
+.card.overlay {
+  cursor: grabbing;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  padding: 0.55rem 0.7rem;
+}
+
+.card .row {
+  gap: 0.4rem;
+}
+
+.card .task-detail {
+  cursor: auto;
 }

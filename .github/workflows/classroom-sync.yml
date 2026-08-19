@@ -1,0 +1,73 @@
+# Hourly Classroom sync.
+#
+# Free, and the repo is already here. It also wakes Render on the way, which
+# is a second reason to keep it: a dyno poked every hour is a dyno that is
+# rarely cold when somebody actually opens the app.
+#
+# GitHub disables scheduled workflows in a repo with no commits for 60 days
+# and emails the owner. On a private repo built by one person over a summer
+# that is a real possibility — if syncs go quiet, check the Actions tab before
+# suspecting the code.
+
+name: Classroom sync
+
+on:
+  schedule:
+    # Hourly. GitHub's scheduler is best-effort and runs late under load —
+    # sometimes by many minutes. That is fine here: nothing downstream assumes
+    # an exact hour, and the app syncs on open regardless.
+    - cron: "17 * * * *"
+  workflow_dispatch: # so a run can be forced while debugging
+
+concurrency:
+  # A late run must never overlap the next one. Sync tolerates concurrency —
+  # it adopts on duplicate-key rather than failing — but two passes racing
+  # over the same tables is wasted Google quota, not resilience.
+  group: classroom-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the backend
+        # Render's free tier sleeps, and the cold start can outlast a short
+        # timeout. Waking it on a cheap unauthenticated route first means the
+        # sync request itself meets a server that is already up, so a slow
+        # boot cannot be misread as a sync failure. Failure here is ignored:
+        # /health being slow is the normal case this step exists to absorb.
+        run: curl -sS --max-time 120 "${{ secrets.API_URL }}/health" || true
+
+      - name: Sync every connected user
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          # --fail-with-body, not --fail: when this breaks, the FastAPI detail
+          # string is the entire diagnosis, and plain --fail throws it away.
+          curl -sS --fail-with-body --max-time 600 \
+            -X POST "$API_URL/classroom/cron/sync" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            | tee report.json
+          echo
+
+          # The endpoint returns 200 when the run completed, even if some
+          # users failed — one revoked grant is not a broken deployment. The
+          # job goes red only when nobody could be synced at all, which is the
+          # shape of an actual outage.
+          python - <<'PY'
+          import json, sys
+          r = json.load(open("report.json"))
+          print(
+              f"{r['users_synced']}/{r['users_considered']} synced · "
+              f"{r['tasks_touched']} tasks touched · "
+              f"{r['users_needing_reconnect']} need reconnect · "
+              f"{r['users_failed']} failed"
+          )
+          for e in r["errors"]:
+              print("  !", e, file=sys.stderr)
+          if r["users_considered"] and not r["users_synced"]:
+              sys.exit("every connected user failed to sync")
+          PY
