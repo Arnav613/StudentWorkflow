@@ -139,7 +139,7 @@ export default function DatePicker({
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        <span className="datepicker-icon" aria-hidden="true">
+        <span className="picker-icon" aria-hidden="true">
           ▤
         </span>
         <span className="grow">{label(value)}</span>

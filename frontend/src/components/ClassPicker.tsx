@@ -97,7 +97,7 @@ export default function ClassPicker({
 
       {open && (
         <div
-          className="picker-pop"
+          className="picker-pop picker-list"
           role="listbox"
           aria-label="Class"
           ref={list}

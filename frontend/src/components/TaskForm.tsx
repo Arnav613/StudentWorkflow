@@ -3,6 +3,7 @@ import * as db from "../lib/db";
 import { toast } from "../lib/toast";
 import DatePicker from "./DatePicker";
 import ClassPicker from "./ClassPicker";
+import TimePicker from "./TimePicker";
 import type { DataStore } from "../hooks/useData";
 
 /**
@@ -81,15 +82,10 @@ export default function TaskForm({ store }: { store: DataStore }) {
             }}
           />
         </div>
-        <label>
+        <div className="field">
           <span className="label">Time (optional)</span>
-          <input
-            type="time"
-            value={time}
-            disabled={!date}
-            onChange={(e) => setTime(e.target.value)}
-          />
-        </label>
+          <TimePicker value={time} disabled={!date} onChange={setTime} />
+        </div>
         <div className="field">
           <span className="label">Class</span>
           <ClassPicker
