@@ -1,6 +1,7 @@
 import { useState } from "react";
 import * as db from "../lib/db";
 import { toast } from "../lib/toast";
+import DatePicker from "./DatePicker";
 import type { DataStore } from "../hooks/useData";
 
 /**
@@ -64,14 +65,21 @@ export default function TaskForm({ store }: { store: DataStore }) {
             onChange={(e) => setDescription(e.target.value)}
           />
         </label>
-        <label>
+        {/* A div, not a label: the control is a button, and a label wrapping
+            one hijacks its click. */}
+        <div className="field">
           <span className="label">Due</span>
-          <input
-            type="date"
+          <DatePicker
             value={date}
-            onChange={(e) => setDate(e.target.value)}
+            onChange={(next) => {
+              setDate(next);
+              // Clearing the date clears the time with it. The time input is
+              // disabled without a date, so a stray value left behind would
+              // be unreachable and would reappear on the next date chosen.
+              if (!next) setTime("");
+            }}
           />
-        </label>
+        </div>
         <label>
           <span className="label">Time (optional)</span>
           <input
