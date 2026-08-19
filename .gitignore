@@ -8,7 +8,6 @@ __pycache__/
 dist/
 .vite/
 
-# Secrets — .env.example is committed, actual values never are
+# Secrets. One .env at the repo root, never committed.
 .env
 .env.*
-!.env.example

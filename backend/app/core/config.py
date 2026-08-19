@@ -5,13 +5,20 @@ missing the app should fail at import, not at the first request from a user.
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# One .env for the whole project, at the repo root. Resolved from this file
+# rather than the working directory, so `uvicorn` started from anywhere finds
+# it. In deployment there is no file at all — Render injects real env vars,
+# and a missing env_file is not an error.
+ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore"
     )
 
     # --- Supabase -----------------------------------------------------------
