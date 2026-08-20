@@ -7,6 +7,7 @@ import { toast, undoable } from "../lib/toast";
 import TaskBoard from "../components/TaskBoard";
 import DocsPanel from "../components/DocsPanel";
 import TimetablePanel from "../components/TimetablePanel";
+import LecturesPanel from "../components/LecturesPanel";
 import GradesPanel from "../components/GradesPanel";
 
 const TABS: { id: ClassTab; label: string }[] = [
@@ -142,12 +143,26 @@ export default function ClassDetail({
         <DocsPanel classId={cls.id} userId={store.userId} aiEnabled={aiEnabled} />
       )}
 
+      {/*
+        Two halves of one question, in the order they have to be answered.
+        Which calendar entry is this class comes first, because the timetable
+        underneath it is only useful once something on the grid is pointed at
+        this course — a term of topics attached to nothing is a document, not a
+        schedule.
+      */}
       {tab === "timetable" && (
-        <TimetablePanel
-          classId={cls.id}
-          userId={store.userId}
-          aiEnabled={aiEnabled}
-        />
+        <div className="stack">
+          <LecturesPanel
+            cls={cls}
+            classes={store.classes}
+            userId={store.userId}
+          />
+          <TimetablePanel
+            classId={cls.id}
+            userId={store.userId}
+            aiEnabled={aiEnabled}
+          />
+        </div>
       )}
 
       {tab === "grades" && (

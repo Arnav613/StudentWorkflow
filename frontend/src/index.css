@@ -2064,13 +2064,28 @@ button.link.danger:hover:not(:disabled) {
   flex-wrap: wrap;
 }
 
+/*
+ * The chart takes the window, and the page does the scrolling.
+ *
+ * This used to be a scroller of its own: a fixed-height box with `overflow:
+ * auto`, which meant the one week worth looking closely at — the one running
+ * past bedtime — was the one that grew a scrollbar down its right-hand side
+ * and hid its own evenings behind it. Two scrollbars for one document is one
+ * too many, and the inner one always wins the wheel it should not have caught.
+ *
+ * So the track is simply as tall as it needs to be and the window scrolls, the
+ * way every other page in this app scrolls. `--fit` is the height of an
+ * *ordinary* fifteen-hour week — sized to fill the screen, since the whole
+ * point of drawing days to scale is being able to compare them at a glance —
+ * and a week that runs later than eleven grows past it in proportion rather
+ * than shrinking to fit.
+ */
 .week-scroll {
-  /* The window, less the furniture above and below it. `max` keeps the chart
-     usable on a short laptop screen, where the alternative is a fifteen-hour
-     day squeezed into four hundred pixels and every block a stripe. */
-  --fit: max(26rem, calc(100vh - 21rem));
-  overflow: auto;
-  overscroll-behavior-x: contain;
+  /* The window, less the furniture above it. `max` keeps the chart usable on
+     a short laptop screen, where the alternative is a fifteen-hour day
+     squeezed into four hundred pixels and every block a stripe. */
+  --fit: max(30rem, calc(100vh - 13rem));
+  overflow: visible;
   padding-bottom: 0.35rem;
 }
 
@@ -2222,7 +2237,10 @@ button.link.danger:hover:not(:disabled) {
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
-  transition: box-shadow 120ms ease, filter 120ms ease;
+  /* `bottom` is in the transition because a drop pushes its neighbours later
+     and they preview that move live: sliding says "this one moved", where a
+     jump says "the chart redrew". */
+  transition: box-shadow 120ms ease, filter 120ms ease, bottom 120ms ease;
 }
 
 .bar:hover {
@@ -2301,6 +2319,47 @@ button.link.danger:hover:not(:disabled) {
   overflow: visible;
   z-index: 20;
   box-shadow: 0 0 0 2px var(--accent);
+}
+
+/*
+ * Where it will land.
+ *
+ * Drawn at the exact size and place the block is about to take, because that
+ * is the only version of this that is worth anything — a highlighted column
+ * says "somewhere in Thursday", which you already knew. An outline rather than
+ * a fill, so it reads as a promise about the chart rather than as another
+ * thing already on it, and it never intercepts the pointer it is describing.
+ */
+.bar-ghost {
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  z-index: 15;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--r-sm, 5px);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/*
+ * The two times, because "here" is only half the answer when the half hour
+ * either side is equally plausible. Centred and allowed to overflow a short
+ * block: a label clipped out of a thirty-minute ghost would be missing from
+ * exactly the drops that are hardest to aim.
+ */
+.ghost-time {
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 0.15rem 0.3rem;
+  border-radius: var(--r-sm, 5px);
+  color: var(--bg);
+  background: var(--accent);
 }
 
 /* ---- What a block says when you ask it ---------------------------------- */
@@ -2596,15 +2655,44 @@ button.link.danger:hover:not(:disabled) {
  * fifteen-hour axes one under another and lose the only thing this screen is
  * for — seeing Thursday next to Sunday.
  */
+/*
+ * On a wide screen the chart is allowed out of the page's 88rem cap.
+ *
+ * Every other screen in this app is reading width — a board, a list, prose —
+ * and 88rem is where a line of text stops being comfortable. This one is a
+ * chart with seven columns in it, and the wider it is the more of an evening
+ * fits inside a block before the name has to be dropped. The cap is a rule
+ * about paragraphs, and there are no paragraphs here.
+ *
+ * Only past the point where `.page` has actually reached its cap, so the
+ * arithmetic below is measuring against a width the page really has.
+ */
+@media (min-width: 92rem) {
+  .week-scroll {
+    --wide: min(116rem, calc(100vw - 4rem));
+    width: var(--wide);
+    margin-inline: calc((84rem - var(--wide)) / 2);
+  }
+}
+
 @media (max-width: 68rem) {
   .week-grid {
     grid-template-columns: auto repeat(7, minmax(6.5rem, 1fr));
+  }
+  /* Seven columns will not fit a narrow window at any readable width, so this
+     one axis does scroll after all. `overflow-x` alone would force
+     `overflow-y: auto` with it, and `clip` is the only value that leaves the
+     vertical axis to the page. */
+  .week-scroll {
+    overflow-x: auto;
+    overflow-y: clip;
+    overscroll-behavior-x: contain;
   }
 }
 
 @media (max-width: 40rem) {
   .week-scroll {
-    --fit: max(24rem, calc(100vh - 24rem));
+    --fit: max(24rem, calc(100vh - 16rem));
   }
   .week-grid {
     grid-template-columns: auto repeat(7, minmax(5.5rem, 1fr));
@@ -3095,4 +3183,45 @@ button.link.danger:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Lectures: which calendar entry is this class
+   ---------------------------------------------------------------------------
+   The link was always in the database and only ever askable from the Week
+   grid's popover, which is a fine place to confirm one and a hopeless place to
+   go looking for one. Asked from this end too, the row is a name, when it
+   happens, and a single verb.
+   -------------------------------------------------------------------------*/
+
+.lecture-links {
+  gap: 0.25rem;
+}
+
+.lecture-link {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 5px);
+  background: var(--surface);
+}
+
+.lecture-link > .grow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+/* The ones already answered, marked on the left edge in the same accent the
+   rest of the app uses for "this is settled". */
+.lecture-link.linked {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.lecture-link button {
+  flex: none;
 }

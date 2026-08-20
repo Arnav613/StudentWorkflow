@@ -398,3 +398,21 @@ export type ClassEventLink = {
   class_id: string;
   created_at: string;
 };
+
+/**
+ * One recurring lecture as the class page needs to see it.
+ *
+ * Not a table. It is `plan_blocks` folded down to one row per series — see
+ * `db.listCalendarSeries` — so a course can be pointed at the calendar entry
+ * it corresponds to without anyone having to know what a series id is.
+ */
+export type CalendarSeries = {
+  google_series_id: string;
+  /** What Google calls it. The only thing a person has to recognise it by. */
+  title: string;
+  /** The earliest occurrence still ahead, as the example shown. */
+  starts_at: string;
+  ends_at: string;
+  /** How many of them are on the mirror, so a one-off reads as a one-off. */
+  occurrences: number;
+};

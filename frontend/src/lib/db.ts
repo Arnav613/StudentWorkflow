@@ -19,6 +19,7 @@
 import { supabase } from "./supabase";
 import type {
   Class,
+  CalendarSeries,
   ChecklistItem,
   ClassDocument,
   ClassEventLink,
@@ -1419,6 +1420,57 @@ export async function deleteRubric(id: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Which calendar series is which class
 // ---------------------------------------------------------------------------
+
+/**
+ * Every recurring lecture Google has told us about, one row per series.
+ *
+ * The mirror in `plan_blocks` holds one row per *occurrence* — a Monday
+ * lecture is thirteen rows over a term — and the question a class page asks is
+ * about the series: "which of these is this course". So the occurrences are
+ * folded down here, keeping the earliest one as the example, because a series
+ * is best identified by a name and a time you recognise.
+ *
+ * Dismissed occurrences count. Skipping next Tuesday's lecture is not a
+ * statement about which class it belongs to, and dropping the series off this
+ * list the week you decide to miss one would be the app forgetting an answer
+ * because of an unrelated decision.
+ */
+export async function listCalendarSeries(from: Date): Promise<CalendarSeries[]> {
+  const rows: PlanBlock[] = unwrap(
+    await supabase
+      .from("plan_blocks")
+      .select("*")
+      .not("google_event_id", "is", null)
+      .gte("ends_at", from.toISOString())
+      .order("starts_at"),
+  );
+
+  const by = new Map<string, CalendarSeries>();
+  for (const r of rows) {
+    // Pre-0011 rows have no series id and are their own series, exactly as
+    // syncCalendar treats them.
+    const id = r.google_series_id ?? r.google_event_id;
+    if (!id) continue;
+    const seen = by.get(id);
+    if (seen) {
+      seen.occurrences += 1;
+      continue;
+    }
+    by.set(id, {
+      google_series_id: id,
+      title: r.title ?? "Calendar",
+      starts_at: r.starts_at,
+      ends_at: r.ends_at,
+      occurrences: 1,
+    });
+  }
+
+  // Alphabetical, not chronological. This is a list you *search* — you know
+  // the name of the course you came here to attach — and clock order would
+  // scatter the same lecture's neighbours by which day of the week they fall
+  // on.
+  return [...by.values()].sort((a, b) => a.title.localeCompare(b.title));
+}
 
 export async function listClassEventLinks(): Promise<ClassEventLink[]> {
   return unwrap(await supabase.from("class_event_links").select("*"));

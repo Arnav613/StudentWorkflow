@@ -39,6 +39,36 @@ export const DAY_START_HOUR = 8;
 export const DAY_END_HOUR = 23;
 
 /**
+ * When a day actually ends, which is not midnight.
+ *
+ * A calendar rolls over at twelve; a person does not. Work that starts at
+ * eleven and runs to half past one is one evening, and drawing its tail at the
+ * foot of Wednesday's column — fourteen hours before anything else on that
+ * Wednesday — is the chart disagreeing with the night you had. So anything
+ * beginning before this hour belongs to the day before it, and the column it
+ * belongs to simply grows taller to hold it. See `weekgrid.spanOf`.
+ *
+ * Four in the morning is the cut. Late enough that no ordinary night crosses
+ * it, early enough that a genuine dawn start — a flight, a 6am gym — still
+ * reads as its own morning rather than yesterday's small hours.
+ */
+export const DAY_ROLLOVER_HOUR = 4;
+
+/**
+ * The day an instant belongs to, in the sense above: midnight of it.
+ *
+ * The single place that arithmetic lives. Everything that groups by day —
+ * the week's columns, a lecture's timetable lookup — goes through here, so
+ * there is one answer to "which day is 1am" and not several that disagree.
+ */
+export function logicalDayOf(instant: string | Date): Date {
+  const d = new Date(instant);
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  if (d.getHours() < DAY_ROLLOVER_HOUR) day.setDate(day.getDate() - 1);
+  return day;
+}
+
+/**
  * The grid every planned block lands on.
  *
  * A scheduler working to the minute produces a week of 5:18pm starts — each
@@ -760,10 +790,16 @@ export function clockOf(iso: string | Date): string {
     .toLowerCase();
 }
 
-/** `510` → `8:30 am`. The same clock, for a minutes-past-midnight value. */
+/**
+ * `510` → `8:30 am`. The same clock, for a minutes-past-midnight value.
+ *
+ * Past 1440 it wraps rather than giving up. The axis runs past midnight
+ * whenever some evening does, and a stack of rules all labelled "midnight"
+ * would be an axis that stops measuring exactly where it got interesting.
+ */
 export function clockOfMinutes(minutes: number): string {
-  if (minutes >= 24 * 60) return "midnight";
-  return clockOf(new Date(2000, 0, 1, Math.floor(minutes / 60), minutes % 60));
+  const m = ((minutes % (24 * 60)) + 24 * 60) % (24 * 60);
+  return clockOf(new Date(2000, 0, 1, Math.floor(m / 60), m % 60));
 }
 
 /** Minutes past midnight → the `"HH:MM"` a TimePicker wants back. */
@@ -772,7 +808,13 @@ export function hhmmOf(minutes: number): string {
   return `${`${Math.floor(m / 60)}`.padStart(2, "0")}:${`${m % 60}`.padStart(2, "0")}`;
 }
 
-/** Group blocks into the day columns they belong to. */
+/**
+ * Group blocks into the day columns they belong to.
+ *
+ * By *logical* day, so a session that runs past midnight stays in the evening
+ * it belongs to instead of reappearing at the foot of the next column. See
+ * `DAY_ROLLOVER_HOUR`.
+ */
 export function byDay<T extends { starts_at: string }>(
   blocks: T[],
   days: Date[],
@@ -780,8 +822,7 @@ export function byDay<T extends { starts_at: string }>(
   const buckets: T[][] = days.map(() => []);
   const index = new Map(days.map((d, i) => [d.getTime(), i]));
   for (const b of blocks) {
-    const d = new Date(b.starts_at);
-    const i = index.get(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime());
+    const i = index.get(logicalDayOf(b.starts_at).getTime());
     if (i !== undefined) buckets[i].push(b);
   }
   return buckets;

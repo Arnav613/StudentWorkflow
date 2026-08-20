@@ -12,6 +12,7 @@ import {
   useSensors,
   type CollisionDetection,
   type DragEndEvent,
+  type DragMoveEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
 import * as db from "../lib/db";
@@ -30,6 +31,7 @@ import {
   formatMinutes,
   hhmmOf,
   isoDate,
+  logicalDayOf,
   planDays,
   planWeek,
   snapUp,
@@ -215,7 +217,9 @@ export default function WeekPage({
   function sessionOf(block: PlanBlock): ClassSession | null {
     const cls = linkedClassOf(block);
     if (!cls) return null;
-    const key = isoDate(new Date(block.starts_at));
+    // The logical day, so a lecture that somehow runs past midnight is still
+    // looked up against the evening it belongs to. See DAY_ROLLOVER_HOUR.
+    const key = isoDate(logicalDayOf(block.starts_at));
     return (
       sessions.find((s) => s.class_id === cls.id && s.on_date === key) ?? null
     );
@@ -320,6 +324,46 @@ export default function WeekPage({
   );
   const span = spanOf(laid);
   const marks = hourMarks(span);
+
+  /**
+   * Where the thing in your hand would land if you let go now.
+   *
+   * Dragging used to be a guess. The cursor carries a small card with a title
+   * on it and the column lights up, but the actual answer — *which half hour*
+   * — was arithmetic done at the moment it was already too late to change your
+   * mind. The chart knows that answer on every move; this is it, drawn.
+   *
+   * It is the real answer and not an approximation of one: the same `insertAt`
+   * the drop itself runs, so the seam it snaps to and the blocks it will push
+   * later are the ones you are looking at before you commit.
+   */
+  const [preview, setPreview] = useState<Drop | null>(null);
+
+  /**
+   * The columns as drawn, which mid-drag is not quite the columns as stored.
+   *
+   * A drop pushes whatever it lands on later, and that is a rearrangement of
+   * your evening — the kind of thing you want to see before agreeing to it,
+   * not after. So the pending shifts are folded into the geometry while the
+   * block is still in the air: the neighbours slide up, the ghost sits in the
+   * hole they left, and letting go changes nothing that was on screen.
+   *
+   * The axis does not rescale to it. Re-reading `span` from a preview that was
+   * computed against `span` is a loop, and a chart whose ruler moves while you
+   * drag is not a chart you can aim at.
+   */
+  const shown = useMemo(() => {
+    if (!preview?.shifts.length) return laid;
+    const to = new Map(preview.shifts.map((s) => [s.block.id, s.startMin]));
+    return laid.map((column) =>
+      column.map((p) => {
+        const at = to.get(p.item.id);
+        return at === undefined
+          ? p
+          : { ...p, startMin: at, endMin: at + (p.endMin - p.startMin) };
+      }),
+    );
+  }, [laid, preview]);
 
   /** Lectures you have not dropped: hours the planner may not use. */
   const busy = onBoard.filter((b) => b.google_event_id);
@@ -1052,7 +1096,22 @@ export default function WeekPage({
     | { kind: "task"; task: Task; minutes: number }
     | { kind: "block"; block: PlanBlock; title: string; minutes: number };
 
+  /** A drag position, fully read: where it lands and what it displaces. */
+  type Drop = {
+    /** Which column. */
+    index: number;
+    day: Date;
+    /** The raw cursor time, before snapping — `dropGroup` reads it again. */
+    cursorMin: number;
+    /** The earliest minute anything may start on that day. */
+    floorMin: number;
+    startMin: number;
+    minutes: number;
+    shifts: { block: PlanBlock; startMin: number }[];
+  };
+
   const [dragging, setDragging] = useState<DragSubject | null>(null);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor),
@@ -1078,8 +1137,102 @@ export default function WeekPage({
     return routineById.get(block.routine_id ?? "")?.title ?? "Routine";
   }
 
+  /**
+   * The whole reading of a drag position, in one place.
+   *
+   * `onDragMove` draws it and `onDragEnd` commits it, and the two have to
+   * agree exactly — a preview that lands half an hour off the drop is worse
+   * than no preview at all, because it is a promise the app then breaks.
+   */
+  function resolveDrop(
+    subject: DragSubject,
+    over: string | number | undefined,
+    activatorEvent: Event | null,
+    deltaY: number,
+  ): Drop | null {
+    if (typeof over !== "string" || !over.startsWith("day:")) return null;
+    const index = Number(over.slice(4));
+    const day = days[index];
+    if (!day) return null;
+
+    /*
+     * Where on the bar you let go is when it happens.
+     *
+     * The height of the cursor inside the column is a time, read off the same
+     * axis the blocks are drawn against — which is the whole reason for
+     * drawing them to scale. Bottom-up, so the arithmetic measures from the
+     * foot.
+     */
+    const track = tracks.current.get(index);
+    if (!track) return null;
+    const rect = track.getBoundingClientRect();
+    if (!rect.height) return null;
+    const pointerY = pointerYOf(activatorEvent) + deltaY;
+    const fromFoot = (rect.bottom - pointerY) / rect.height;
+    // Clamped to the axis. A keyboard drag has no pointer to read, and an
+    // unclamped fraction would put the block at some hour of the following
+    // week rather than declining to guess.
+    const cursorMin = Math.min(
+      GRID_START_MIN + span,
+      Math.max(GRID_START_MIN, GRID_START_MIN + fromFoot * span),
+    );
+
+    // Nothing may be planned into an hour that has gone. On today that floor
+    // is now; on any later day it is the foot of the axis.
+    const floorMin = isToday(day)
+      ? Math.max(GRID_START_MIN, minutesFrom(day, new Date(snapUp(Date.now()))))
+      : GRID_START_MIN;
+
+    const activeId =
+      subject.kind === "task"
+        ? `task:${subject.task.id}`
+        : `block:${subject.block.id}`;
+    const group = selection.count > 1 && selection.has(activeId);
+
+    /*
+     * A group lands where it lands and pushes nothing: six blocks each
+     * shoving their own neighbours is not something anyone could predict
+     * before letting go. So its preview is the anchor alone, snapped.
+     */
+    if (group) {
+      return {
+        index,
+        day,
+        cursorMin,
+        floorMin,
+        startMin: Math.max(floorMin, snapToSlot(cursorMin)),
+        minutes: subject.minutes,
+        shifts: [],
+      };
+    }
+
+    const { startMin, shifts } = insertAt({
+      day,
+      blocks: blocksByDay[index],
+      cursorMin,
+      minutes: subject.minutes,
+      heldId: subject.kind === "task" ? null : subject.block.id,
+      floorMin,
+    });
+    return {
+      index,
+      day,
+      cursorMin,
+      floorMin,
+      startMin,
+      minutes: subject.minutes,
+      shifts,
+    };
+  }
+
+  function onDragMove(e: DragMoveEvent) {
+    if (!dragging) return;
+    setPreview(resolveDrop(dragging, e.over?.id, e.activatorEvent, e.delta.y));
+  }
+
   function onDragStart(e: DragStartEvent) {
     setOpenId(null);
+    setPreview(null);
     const id = String(e.active.id);
     if (id.startsWith("task:")) {
       const u = outstanding.find((o) => o.task_id === id.slice(5));
@@ -1099,6 +1252,7 @@ export default function WeekPage({
   async function onDragEnd(e: DragEndEvent) {
     const subject = dragging;
     setDragging(null);
+    setPreview(null);
     const over = e.over?.id;
     if (!subject || typeof over !== "string") return;
 
@@ -1122,53 +1276,17 @@ export default function WeekPage({
       return;
     }
 
-    if (!over.startsWith("day:")) return;
-    const index = Number(over.slice(4));
-    const day = days[index];
-    if (!day) return;
-
-    /*
-     * Where on the bar you let go is when it happens.
-     *
-     * The height of the cursor inside the column is a time, read off the same
-     * axis the blocks are drawn against — which is the whole reason for drawing
-     * them to scale. Bottom-up, so the arithmetic measures from the foot.
-     */
-    const track = tracks.current.get(index);
-    if (!track) return;
-    const rect = track.getBoundingClientRect();
-    if (!rect.height) return;
-    const pointerY = pointerYOf(e.activatorEvent) + e.delta.y;
-    const fromFoot = (rect.bottom - pointerY) / rect.height;
-    // Clamped to the axis. A keyboard drag has no pointer to read, and an
-    // unclamped fraction would put the block at some hour of the following
-    // week rather than declining to guess.
-    const cursorMin = Math.min(
-      GRID_START_MIN + span,
-      Math.max(GRID_START_MIN, GRID_START_MIN + fromFoot * span),
-    );
-
-    // Nothing may be planned into an hour that has gone. On today that floor
-    // is now; on any later day it is the foot of the axis.
-    const today = isSameDay(day, new Date());
-    const floorMin = today
-      ? Math.max(GRID_START_MIN, minutesFrom(day, new Date(snapUp(Date.now()))))
-      : GRID_START_MIN;
+    // The same reading the preview was drawn from, so what you were shown is
+    // what happens.
+    const drop = resolveDrop(subject, over, e.activatorEvent, e.delta.y);
+    if (!drop) return;
+    const { day, startMin, shifts } = drop;
 
     if (group) {
-      await dropGroup(subject, day, cursorMin, floorMin);
+      await dropGroup(subject, day, drop.cursorMin, drop.floorMin);
       return;
     }
 
-    const held = subject.kind === "task" ? null : subject.block.id;
-    const { startMin, shifts } = insertAt({
-      day,
-      blocks: blocksByDay[index],
-      cursorMin,
-      minutes: subject.minutes,
-      heldId: held,
-      floorMin,
-    });
     const start = instantOf(day, startMin);
 
     if (start.getTime() + subject.minutes * 60_000 <= Date.now()) {
@@ -1452,8 +1570,12 @@ export default function WeekPage({
         sensors={sensors}
         collisionDetection={collision}
         onDragStart={onDragStart}
+        onDragMove={onDragMove}
         onDragEnd={(e) => void onDragEnd(e)}
-        onDragCancel={() => setDragging(null)}
+        onDragCancel={() => {
+          setDragging(null);
+          setPreview(null);
+        }}
       >
         {/*
           The chart. Seven bars and the axis they are measured against.
@@ -1501,8 +1623,15 @@ export default function WeekPage({
                   if (el) tracks.current.set(i, el);
                   else tracks.current.delete(i);
                 }}
+                /* Only the column being dropped into draws one, and only for
+                   as long as something is in the air over it. */
+                ghost={
+                  preview?.index === i
+                    ? { startMin: preview.startMin, minutes: preview.minutes }
+                    : null
+                }
               >
-                {laid[i].map((p) => (
+                {shown[i].map((p) => (
                   <BlockBar
                     key={p.item.id}
                     placed={p}
@@ -1700,6 +1829,7 @@ function DayColumn({
   marks,
   span,
   register,
+  ghost,
   children,
 }: {
   day: Date;
@@ -1708,9 +1838,11 @@ function DayColumn({
   span: number;
   /** Hands the track element up, so a drop can measure it where it now is. */
   register: (el: HTMLElement | null) => void;
+  /** Where the thing in the air would land, or null if it is elsewhere. */
+  ghost: { startMin: number; minutes: number } | null;
   children: React.ReactNode;
 }) {
-  const today = isSameDay(day, new Date());
+  const today = isToday(day);
   const { setNodeRef, isOver } = useDroppable({ id: `day:${index}` });
 
   return (
@@ -1738,6 +1870,30 @@ function DayColumn({
             style={{ bottom: `${((m.min - GRID_START_MIN) / span) * 100}%` }}
           />
         ))}
+
+        {/*
+          The landing spot, drawn at the size and place the block will actually
+          take. An outline rather than a filled bar, so it reads as a promise
+          about the chart and not as another thing already on it — and it
+          carries the two times, because "here" is only half the answer when
+          the half-hour either side is equally plausible.
+        */}
+        {ghost && (
+          <div
+            className="bar-ghost"
+            aria-hidden="true"
+            style={{
+              bottom: `${((ghost.startMin - GRID_START_MIN) / span) * 100}%`,
+              height: `${(ghost.minutes / span) * 100}%`,
+            }}
+          >
+            <span className="ghost-time">
+              {clockOfMinutes(ghost.startMin)}–
+              {clockOfMinutes(ghost.startMin + ghost.minutes)}
+            </span>
+          </div>
+        )}
+
         {children}
       </div>
     </section>
@@ -2168,6 +2324,17 @@ const WEEKDAYS = [
 function hhmmToDate(hhmm: string): Date {
   const [h, m] = hhmm.split(":").map(Number);
   return new Date(2000, 0, 1, h, m);
+}
+
+/**
+ * Whether a column is the day you are currently in — by the rollover, not the
+ * clock.
+ *
+ * At half past one in the morning the day you are having is still yesterday's,
+ * and the column tinted as "today" should be the one your evening is drawn in.
+ */
+function isToday(day: Date): boolean {
+  return day.getTime() === logicalDayOf(new Date()).getTime();
 }
 
 function isSameDay(a: Date, b: Date): boolean {
