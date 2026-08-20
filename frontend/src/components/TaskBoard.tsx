@@ -95,11 +95,6 @@ export default function TaskBoard({
         <p className="empty-title">
           {emptyFor ? `Nothing for ${emptyFor} yet` : "Nothing on the board"}
         </p>
-        <p className="muted">
-          {emptyFor
-            ? "Deadlines you add on the To do tab, and anything Classroom imports for this course, will show up here."
-            : "Add your deadlines above — coursework, club meetings, laundry."}
-        </p>
       </section>
     );
   }

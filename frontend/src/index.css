@@ -551,6 +551,13 @@ button.link.danger:hover:not(:disabled) {
   margin: 0 0 0.35rem;
 }
 
+/* The line under the title is optional now — Tasks and Docs say only
+   "Nothing … yet" — and a bottom margin under the last line is a gap the
+   centred block reads as being off-centre. */
+.empty-title:last-child {
+  margin-bottom: 0;
+}
+
 .empty-state .muted {
   margin: 0 auto;
   max-width: 34rem;

@@ -176,11 +176,6 @@ export default function DocsPanel({
         ) : links.length === 0 ? (
           <div className="empty-state">
             <p className="empty-title">Nothing pinned yet</p>
-            <p className="muted">
-              Put the syllabus, the shared Drive folder and the course page
-              here, so they are one click from the work instead of eleven tabs
-              deep.
-            </p>
           </div>
         ) : (
           <ul className="list docs-list">
