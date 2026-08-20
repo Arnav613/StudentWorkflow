@@ -4,7 +4,6 @@ import { useData } from "../hooks/useData";
 import ClassesPage from "./Classes";
 import TodoPage from "./Todo";
 import WeekPage from "./Week";
-import ForecastPage from "./Forecast";
 import ClassDetail from "./ClassDetail";
 import AccountMenu from "../components/AccountMenu";
 import Logo from "../components/Logo";
@@ -12,7 +11,7 @@ import { useTitle } from "../lib/title";
 import {
   BoardSkeleton,
   ClassGridSkeleton,
-  ForecastSkeleton,
+  WeekSkeleton,
 } from "../components/Skeleton";
 
 /*
@@ -46,7 +45,6 @@ export type View =
   | { kind: "classes" }
   | { kind: "todo" }
   | { kind: "week" }
-  | { kind: "forecast" }
   | { kind: "class"; id: string; tab: ClassTab };
 
 export type ClassTab = "tasks" | "notes" | "docs";
@@ -57,7 +55,6 @@ function viewToHash(v: View): string {
   if (v.kind === "classes") return "#/classes";
   if (v.kind === "todo") return "#/todo";
   if (v.kind === "week") return "#/week";
-  if (v.kind === "forecast") return "#/forecast";
   return `#/class/${v.id}/${v.tab}`;
 }
 
@@ -65,7 +62,6 @@ function hashToView(hash: string): View {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "todo") return { kind: "todo" };
   if (parts[0] === "week") return { kind: "week" };
-  if (parts[0] === "forecast") return { kind: "forecast" };
   if (parts[0] === "class" && parts[1]) {
     const tab = CLASS_TABS.includes(parts[2] as ClassTab)
       ? (parts[2] as ClassTab)
@@ -122,11 +118,10 @@ export default function Board({
 
   const tab = view.kind === "class" ? "classes" : view.kind;
 
-  const TOP_TAB_TITLE: Record<"classes" | "todo" | "week" | "forecast", string> = {
+  const TOP_TAB_TITLE: Record<"classes" | "todo" | "week", string> = {
     classes: "Classes",
     todo: "To do",
     week: "Week",
-    forecast: "Forecast",
   };
 
   const TAB_LABEL: Record<ClassTab, string> = {
@@ -173,21 +168,18 @@ export default function Board({
               To do
             </button>
             {/* Third and last. "What am I taking", "what is due", "when will I
-                do it" — three questions, in the order a term asks them. */}
+                do it" — three questions, in the order a term asks them.
+
+                There was a fourth, Forecast, drawing a bar chart of the
+                fortnight ahead. It has gone, and not because it was wrong: it
+                was the only screen telling the truth about how much work a
+                week held, and it told it somewhere you could not touch
+                anything. The Week is that chart now. */}
             <button
               className={`tab${tab === "week" ? " current" : ""}`}
               onClick={() => go({ kind: "week" })}
             >
               Week
-            </button>
-            {/* And the fourth: how much of it there is going to be. The other
-                three are about now; this one is the only tab that is any use
-                before the week it describes arrives. */}
-            <button
-              className={`tab${tab === "forecast" ? " current" : ""}`}
-              onClick={() => go({ kind: "forecast" })}
-            >
-              Forecast
             </button>
           </nav>
 
@@ -208,9 +200,9 @@ export default function Board({
       )}
 
       {store.loading ? (
-        view.kind === "forecast" ? (
-          <ForecastSkeleton />
-        ) : view.kind === "todo" || view.kind === "week" ? (
+        view.kind === "week" ? (
+          <WeekSkeleton />
+        ) : view.kind === "todo" ? (
           <BoardSkeleton />
         ) : (
           <ClassGridSkeleton />
@@ -224,11 +216,6 @@ export default function Board({
         <TodoPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
       ) : view.kind === "week" ? (
         <WeekPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
-      ) : view.kind === "forecast" ? (
-        <ForecastPage
-          store={store}
-          onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })}
-        />
       ) : view.kind === "class" && openClass ? (
         <ClassDetail
           cls={openClass}

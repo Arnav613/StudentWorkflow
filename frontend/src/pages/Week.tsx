@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -26,13 +26,27 @@ import {
   byDay,
   classMedians,
   clockOf,
+  clockOfMinutes,
   formatMinutes,
   hhmmOf,
   planDays,
   planWeek,
-  timeForSlot,
+  snapUp,
   unscheduled,
 } from "../lib/schedule";
+import {
+  GRID_START_MIN,
+  GRID_MINUTES,
+  classForEvent,
+  geometry,
+  hourMarks,
+  insertAt,
+  instantOf,
+  layoutDay,
+  minutesFrom,
+  spanOf,
+  type Placed,
+} from "../lib/weekgrid";
 import RoutinesPanel from "../components/RoutinesPanel";
 import ScopeDialog, { type Scope } from "../components/ScopeDialog";
 import TimePicker from "../components/TimePicker";
@@ -48,24 +62,40 @@ import type {
 
 const DAYS = PLAN_DAYS;
 
+/** Shorter than this and the name cannot be read at any scale worth having. */
+const SLIVER_MINUTES = 45;
+
 /**
- * The Week: seven days, and what you have actually decided to do in them.
+ * The Week: seven days drawn to scale, and what you have decided to do in them.
  *
  * The board answers "what is due". This answers "when will I do it", which is
- * the question the board has never been able to answer and the reason a
- * deadline list stops being enough somewhere around week four.
+ * the question a deadline list stops being able to answer somewhere around
+ * week four.
+ *
+ * It used to answer it as seven lists of cards, and a list is the one shape
+ * that cannot say *how much*: a half-hour errand and a four-hour essay drew
+ * the same card, so a brutal Thursday and an empty Sunday looked alike. There
+ * was a separate Forecast tab drawing the bar chart that did say it, which
+ * meant the truth about your week lived on a screen you could not touch and
+ * the screen you could touch was the one telling the comfortable lie.
+ *
+ * They are one thing now. Each day is a bar growing off an axis — 8am at the
+ * foot, 11pm at the head — where a block's height *is* its length and the space
+ * left over is free time you can drop into. Classes, work and routines sit in
+ * the order the day actually runs, not grouped by kind, because "two hours of
+ * study" is a different fact from "two hours of study starting at nine".
+ *
+ * A block shows a name and a colour and nothing else. Everything else — the
+ * times, the class, the deadline — is one click away, over the top of the
+ * column rather than inside it, so opening a card never moves the chart.
  *
  * Regenerate is a button and never a side effect. A plan that reshuffles
- * itself while you are reading it is not a plan — it is a slot machine — and
- * the moment it moves something you had mentally committed to, you stop
- * believing any of it.
+ * itself while you are reading it is not a plan, it is a slot machine.
  *
  * Everything on the grid is a row in `plan_blocks` — work, routines and
- * lectures alike. Lectures used to be fetched from Google on every open and
- * drawn on top, which cost a visible pause and made them the one thing on the
- * board that could not be moved. They are mirrored now (see `db.syncCalendar`),
- * so the grid paints from one query and a lecture you are not attending can be
- * dragged off it like anything else — locally, never back to Google.
+ * lectures alike. Lectures are mirrored from Google (see `db.syncCalendar`),
+ * so one you are not attending can be dragged off the board like anything
+ * else — locally, never back to Google.
  */
 export default function WeekPage({
   store,
@@ -90,6 +120,19 @@ export default function WeekPage({
   const [generating, setGenerating] = useState(false);
   const [resyncing, setResyncing] = useState(false);
   const [calendarGranted, setCalendarGranted] = useState<boolean | null>(null);
+  /** The one block showing its details. At most one, over the top of the grid. */
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  /*
+   * The seven tracks, by column, so a drop can measure the one it landed in.
+   *
+   * dnd-kit hands back the rect it measured when the drag began. That is the
+   * right answer until the grid scrolls under the cursor — which it does the
+   * moment a week runs past bedtime — and then every drop is off by however
+   * far it scrolled. Reading the element live costs one layout and cannot
+   * drift.
+   */
+  const tracks = useRef(new Map<number, HTMLElement>());
 
   const days = useMemo(() => planDays(planFrom, DAYS), [planFrom]);
   const medians = useMemo(() => classMedians(tasks), [tasks]);
@@ -170,6 +213,24 @@ export default function WeekPage({
   const onBoard = planBlocks.filter((b) => !b.dismissed);
   const blocksByDay = byDay(onBoard, days);
 
+  /**
+   * The geometry of all seven columns, and the axis they share.
+   *
+   * One scale for the whole grid. Letting each day scale to its own busiest
+   * hour would make every column full and the comparison between them
+   * meaningless, which is the failure mode of every "helpfully" auto-ranged
+   * chart.
+   */
+  const laid: Placed<PlanBlock>[][] = useMemo(
+    () => days.map((day, i) => layoutDay(day, blocksByDay[i])),
+    // blocksByDay is rebuilt every render from planBlocks; that is the real
+    // dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [days, planBlocks],
+  );
+  const span = spanOf(laid);
+  const marks = hourMarks(span);
+
   /** Lectures you have not dropped: hours the planner may not use. */
   const busy = onBoard.filter((b) => b.google_event_id);
   /** Lectures you have dropped: they wait in the rail, and cost nothing. */
@@ -193,6 +254,26 @@ export default function WeekPage({
     .reduce((sum, b) => sum + blockMinutes(b), 0);
 
   const missed = outstanding.filter((u) => u.missed).length;
+
+  /**
+   * What colour a block carries.
+   *
+   * Work takes its class's hue, which is the whole point of class colours —
+   * the same essay is the same colour on every screen in the app. A routine
+   * takes the one reserved shade, because "not work" is a category rather than
+   * a class. A lecture is matched to a class by name where it can be, since
+   * Google sends a string and nothing else, and grey where it cannot.
+   */
+  function hueOf(block: PlanBlock): string {
+    if (block.routine_id) return "hue-routine";
+    if (block.google_event_id) {
+      const guess = classForEvent(block.title, classes);
+      return guess ? `hue-${guess.color}` : "hue-none";
+    }
+    const task = block.task_id ? taskById.get(block.task_id) : null;
+    const cls = task?.class_id ? classById.get(task.class_id) : null;
+    return cls ? `hue-${cls.color}` : "hue-none";
+  }
 
   async function regenerate() {
     setGenerating(true);
@@ -303,7 +384,53 @@ export default function WeekPage({
     }
   }
 
-  /** The time on the tile, changed on the tile. Keeps the block's length. */
+  /**
+   * Push a run of blocks later to make room for something dropped among them.
+   *
+   * Optimistic like every other edit here, and deliberately *not* locking:
+   * see `db.shiftBlock`. A block that moved because something else arrived is
+   * not a decision anybody made, and pinning it would have one drag freeze a
+   * whole evening against the next Replan.
+   */
+  async function applyShifts(
+    day: Date,
+    shifts: { block: PlanBlock; startMin: number }[],
+  ) {
+    if (!shifts.length) return;
+
+    const moved = shifts.map(({ block, startMin }) => {
+      const start = instantOf(day, startMin);
+      return {
+        id: block.id,
+        starts_at: start.toISOString(),
+        ends_at: new Date(
+          start.getTime() + blockMinutes(block) * 60_000,
+        ).toISOString(),
+      };
+    });
+    const byId = new Map(moved.map((m) => [m.id, m]));
+
+    const previous = planBlocks;
+    setPlanBlocks((prev) =>
+      inOrder(
+        prev.map((b) => {
+          const m = byId.get(b.id);
+          return m ? { ...b, starts_at: m.starts_at, ends_at: m.ends_at } : b;
+        }),
+      ),
+    );
+
+    try {
+      await Promise.all(
+        moved.map((m) => db.shiftBlock(m.id, m.starts_at, m.ends_at)),
+      );
+    } catch (e) {
+      setPlanBlocks(previous);
+      toast(errorText(e, "Could not make room for that"), "error");
+    }
+  }
+
+  /** The time on the card, changed on the card. Keeps the block's length. */
   async function retime(block: PlanBlock, hhmm: string) {
     if (!hhmm) return;
     const start = new Date(block.starts_at);
@@ -392,21 +519,24 @@ export default function WeekPage({
   /**
    * Take something off the board.
    *
+   * There is no button for this any more. Dragging a block into the Unplanned
+   * rail is the gesture, and it is the same gesture that brings it back — a
+   * Remove link beside it was a second way to say one thing, and the one that
+   * could not be undone by reversing itself.
+   *
    * A lecture is dismissed rather than deleted — the row is a mirror of
    * Google's, so a delete would last until the next refresh — and it lands in
    * the rail, where it can be dragged back. Work is deleted, and the task it
    * belonged to reappears in the rail on its own because its hours are no
-   * longer accounted for.
+   * longer accounted for. Either way the hole it leaves stays a hole: nothing
+   * else in the day moves, because nothing else was asked to.
    */
   async function clear(block: PlanBlock) {
     /*
      * Removing one block of a routine used to remove the routine — every
-     * Tuesday of it, from a button sitting on a single Tuesday's card. Skipping
-     * one gym session is a far more ordinary thing to want than giving up the
-     * gym, and it was the one thing the card could not say.
-     *
-     * So removal asks the same three-way question a move does, and nothing
-     * happens until it is answered.
+     * Tuesday of it. Skipping one gym session is a far more ordinary thing to
+     * want than giving up the gym, so removal asks the same three-way question
+     * a move does, and nothing happens until it is answered.
      */
     if (block.routine_id) {
       const routine = routineById.get(block.routine_id);
@@ -591,12 +721,11 @@ export default function WeekPage({
   /*
    * Pointer first, rectangles as a fallback.
    *
-   * The drop targets on this screen are nested — a card inside a column — and
-   * the default rectangle test happily reports the column when the cursor is
-   * plainly on a card, which is how a block dropped at the bottom of Thursday
-   * used to land at the top of it. `pointerWithin` asks the only question the
-   * gesture is actually making: what is under the cursor. The fallback covers
-   * a keyboard drag, where there is no cursor to ask about.
+   * A column is one target now rather than a ladder of seams, so the old
+   * nesting problem is gone — but `pointerWithin` is still the right question
+   * to ask, because the answer has to be the column the cursor is *in* for the
+   * height of that cursor to mean a time. The fallback covers a keyboard drag,
+   * where there is no cursor to ask about.
    */
   const collision: CollisionDetection = (args) => {
     const hits = pointerWithin(args);
@@ -610,6 +739,7 @@ export default function WeekPage({
   }
 
   function onDragStart(e: DragStartEvent) {
+    setOpenId(null);
     const id = String(e.active.id);
     if (id.startsWith("task:")) {
       const u = outstanding.find((o) => o.task_id === id.slice(5));
@@ -632,39 +762,56 @@ export default function WeekPage({
     const over = e.over?.id;
     if (!subject || typeof over !== "string") return;
 
-    /* Off the board, into the rail. */
+    /* Off the board, into the rail. The only way to remove anything. */
     if (over === "unplanned") {
       if (subject.kind === "task") return;
       await clear(subject.block);
       return;
     }
 
-    const at = parseDrop(over);
-    if (!at) return;
-    const day = days[at.day];
+    if (!over.startsWith("day:")) return;
+    const index = Number(over.slice(4));
+    const day = days[index];
     if (!day) return;
 
     /*
-     * Where it lands is when it happens.
+     * Where on the bar you let go is when it happens.
      *
-     * The old rule kept the block's clock and only changed its date, so an 8am
-     * session dropped at the foot of Thursday snapped back to the top of the
-     * column — the app overruling the one instruction the drag carried. Now
-     * the gap you dropped into decides the time, and the block keeps only its
-     * length: a forty-minute reading dropped into a two-hour hole stays forty
-     * minutes, and the rest of the hole stays free.
+     * The height of the cursor inside the column is a time, read off the same
+     * axis the blocks are drawn against — which is the whole reason for drawing
+     * them to scale. Bottom-up, so the arithmetic measures from the foot.
      */
+    const track = tracks.current.get(index);
+    if (!track) return;
+    const rect = track.getBoundingClientRect();
+    if (!rect.height) return;
+    const pointerY = pointerYOf(e.activatorEvent) + e.delta.y;
+    const fromFoot = (rect.bottom - pointerY) / rect.height;
+    // Clamped to the axis. A keyboard drag has no pointer to read, and an
+    // unclamped fraction would put the block at some hour of the following
+    // week rather than declining to guess.
+    const cursorMin = Math.min(
+      GRID_START_MIN + span,
+      Math.max(GRID_START_MIN, GRID_START_MIN + fromFoot * span),
+    );
+
+    // Nothing may be planned into an hour that has gone. On today that floor
+    // is now; on any later day it is the foot of the axis.
+    const today = isSameDay(day, new Date());
+    const floorMin = today
+      ? Math.max(GRID_START_MIN, minutesFrom(day, new Date(snapUp(Date.now()))))
+      : GRID_START_MIN;
+
     const held = subject.kind === "task" ? null : subject.block.id;
-    const list = blocksByDay[at.day];
-    const start = timeForSlot({
+    const { startMin, shifts } = insertAt({
       day,
-      after: lastBefore(list, at.index, held),
-      before: firstFrom(list, at.index, held),
+      blocks: blocksByDay[index],
+      cursorMin,
       minutes: subject.minutes,
-      // Its own clock is the answer unless a neighbour is in the way. A task
-      // out of the rail has never had one.
-      current: subject.kind === "task" ? null : new Date(subject.block.starts_at),
+      heldId: held,
+      floorMin,
     });
+    const start = instantOf(day, startMin);
 
     if (start.getTime() + subject.minutes * 60_000 <= Date.now()) {
       toast("That hour has already gone", "info");
@@ -672,6 +819,11 @@ export default function WeekPage({
     }
 
     try {
+      // Room first, then the thing that needed it — in that order on screen so
+      // the new block never appears sitting on top of an old one, even for the
+      // single frame between two setStates.
+      await applyShifts(day, shifts);
+
       if (subject.kind === "task") {
         // Same reasoning as commitMove: the card appears where it was dropped
         // and the insert catches up. The placeholder carries a temporary id
@@ -730,6 +882,8 @@ export default function WeekPage({
     }
   }
 
+  /* --- The screen ---------------------------------------------------------*/
+
   return (
     <div className="stack">
       <div className="page-head week-head">
@@ -771,8 +925,7 @@ export default function WeekPage({
 
           No button. Granting the permission is not this screen's job — the
           Classes tab raises it as part of the one reconnect prompt the app
-          already has, so a permission is asked for in one place rather than
-          wherever it happens to be missed. */}
+          already has. */}
       {calendarGranted === false ? (
         <p className="muted small notice">
           Planning without your calendar, so every hour you have set aside counts
@@ -787,42 +940,89 @@ export default function WeekPage({
         onDragEnd={(e) => void onDragEnd(e)}
         onDragCancel={() => setDragging(null)}
       >
-        <div className="week">
-          {days.map((day, i) => (
-            <DayColumn key={day.getTime()} day={day}>
-              {blocksByDay[i].length === 0 ? (
-                <ul className="list blocks">
-                  <DropSlot id={`tail:${i}`} className="slot-empty">
-                    <span className="muted small">Free</span>
-                  </DropSlot>
-                </ul>
-              ) : (
-                <ul className="list blocks">
-                  <DropSlot id={`gap:${i}:0`} />
-                  {blocksByDay[i].map((block, k) => (
-                    <BlockCard
-                      key={block.id}
-                      block={block}
-                      slot={`card:${i}:${k}`}
-                      gap={`gap:${i}:${k + 1}`}
-                      task={block.task_id ? taskById.get(block.task_id) ?? null : null}
-                      routine={
-                        block.routine_id
-                          ? routineById.get(block.routine_id) ?? null
-                          : null
-                      }
-                      cls={classById}
-                      onRetime={(t) => void retime(block, t)}
-                      onResize={(t) => void resize(block, t)}
-                      onClear={() => void clear(block)}
-                      onOpenClass={onOpenClass}
-                    />
-                  ))}
-                  <DropSlot id={`tail:${i}`} className="slot-tail" />
-                </ul>
-              )}
-            </DayColumn>
-          ))}
+        {/*
+          The chart. Seven bars and the axis they are measured against.
+
+          `--span` is how many minutes of day the tallest column needs and
+          `--base` is the fifteen the axis nominally holds; the track's height
+          is the first over the second, so an ordinary week fits the window
+          exactly and only a week that has been pushed past bedtime scrolls.
+          Every column takes the same two numbers, which is what makes Thursday
+          and Sunday comparable at a glance.
+        */}
+        <div
+          className="week-scroll"
+          style={
+            {
+              "--span": span,
+              "--base": GRID_MINUTES,
+            } as React.CSSProperties
+          }
+        >
+          <div className="week-grid">
+            <div className="week-axis">
+              <div className="axis-head" aria-hidden="true" />
+              <div className="axis-track">
+                {marks.map((m) => (
+                  <span
+                    key={m.min}
+                    className="axis-mark"
+                    style={{ bottom: `${((m.min - GRID_START_MIN) / span) * 100}%` }}
+                  >
+                    {m.label ? clockOfMinutes(m.min) : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {days.map((day, i) => (
+              <DayColumn
+                key={day.getTime()}
+                day={day}
+                index={i}
+                marks={marks}
+                span={span}
+                register={(el) => {
+                  if (el) tracks.current.set(i, el);
+                  else tracks.current.delete(i);
+                }}
+              >
+                {laid[i].map((p) => (
+                  <BlockBar
+                    key={p.item.id}
+                    placed={p}
+                    span={span}
+                    hue={hueOf(p.item)}
+                    title={titleOf(p.item)}
+                    open={openId === p.item.id}
+                    onToggle={() =>
+                      setOpenId((cur) => (cur === p.item.id ? null : p.item.id))
+                    }
+                    /* Anchored away from the edge of the window. A panel wider
+                       than its column has to lean somewhere, and on Saturday
+                       the only direction with room is left. */
+                    flip={i >= DAYS - 2}
+                    /* And upward or downward. A panel hanging off a block near
+                       the head of the column would open straight out of the
+                       top of the scroller. */
+                    vflip={
+                      (p.startMin - GRID_START_MIN) / span > 0.55
+                    }
+                    task={p.item.task_id ? taskById.get(p.item.task_id) ?? null : null}
+                    routine={
+                      p.item.routine_id
+                        ? routineById.get(p.item.routine_id) ?? null
+                        : null
+                    }
+                    cls={classById}
+                    onRetime={(t) => void retime(p.item, t)}
+                    onResize={(t) => void resize(p.item, t)}
+                    onOpenClass={onOpenClass}
+                  />
+                ))}
+              </DayColumn>
+            ))}
+          </div>
         </div>
 
         {/*
@@ -830,9 +1030,11 @@ export default function WeekPage({
           make it look achievable is worse than none. These are hours the plan
           could not find a home for; they have not gone anywhere.
 
-          It is also where things come back to. An hour that passed without the
-          work being done stops counting as planned and the task reappears here
-          — nothing is deleted and nothing is quietly forgiven.
+          It is also where things come back to, and now the only way they leave
+          the grid: drag a block down here and it is off the board. An hour that
+          passed without the work being done stops counting as planned and the
+          task reappears here on its own — nothing is deleted and nothing is
+          quietly forgiven.
         */}
         <UnplannedRail
           outstanding={outstanding}
@@ -881,9 +1083,10 @@ export default function WeekPage({
 /**
  * Blocks in clock order.
  *
- * The columns render whatever order the array is in — the loading query sorts
- * by starts_at, and an optimistic edit has to keep that promise itself or a
- * card lands visually last in a day it belongs in the middle of.
+ * The layout sorts its own copy, so this no longer decides what the grid
+ * looks like — but the array is still read in order everywhere else, and an
+ * optimistic edit that left it shuffled would make the next diff harder to
+ * reason about than the sort costs.
  */
 function inOrder(blocks: PlanBlock[]): PlanBlock[] {
   return [...blocks].sort(
@@ -903,241 +1106,244 @@ function sitting(minutes: number): number {
   return Math.max(SLOT_MINUTES, Math.round(minutes));
 }
 
-/** `gap:3:2` / `card:3:2` / `tail:3` → which column, and which position in it. */
-function parseDrop(id: string): { day: number; index: number } | null {
-  const [kind, a, b] = id.split(":");
-  const day = Number(a);
-  if (!Number.isFinite(day)) return null;
-  if (kind === "tail") return { day, index: Number.MAX_SAFE_INTEGER };
-  if (kind === "gap" || kind === "card") return { day, index: Number(b) };
-  return null;
-}
-
-/** The item below the gap, skipping the block being dragged out of it. */
-function firstFrom(
-  list: PlanBlock[],
-  index: number,
-  held: string | null,
-): PlanBlock | null {
-  for (let i = Math.max(0, index); i < list.length; i++) {
-    if (list[i].id !== held) return list[i];
-  }
-  return null;
-}
-
-/** The item above the gap, skipping the block being dragged out of it. */
-function lastBefore(
-  list: PlanBlock[],
-  index: number,
-  held: string | null,
-): PlanBlock | null {
-  for (let i = Math.min(index, list.length) - 1; i >= 0; i--) {
-    if (list[i].id !== held) return list[i];
-  }
-  return null;
+/** Where the pointer is, from the event that started the drag. */
+function pointerYOf(e: Event | null): number {
+  if (e && "clientY" in e) return (e as PointerEvent).clientY;
+  return 0;
 }
 
 /**
- * A place to drop something: between two cards, or at the end of a column.
+ * One day: a header, and a track things are drawn on.
  *
- * Nearly invisible until a drag is in flight, and then it opens into a real
- * target. A permanent gutter between every card would cost a seven-column grid
- * more vertical space than the cards themselves.
+ * The track is the drop target, and the only one in the column. The old grid
+ * had a droppable in every seam between every pair of cards — a ladder of
+ * targets standing in for the continuous thing they were approximating — and
+ * with the day drawn to scale the continuous thing is right there. Where you
+ * let go is the time.
  */
-function DropSlot({
-  id,
-  className = "",
+function DayColumn({
+  day,
+  index,
+  marks,
+  span,
+  register,
   children,
 }: {
-  id: string;
-  className?: string;
-  children?: React.ReactNode;
+  day: Date;
+  index: number;
+  marks: { min: number; label: boolean }[];
+  span: number;
+  /** Hands the track element up, so a drop can measure it where it now is. */
+  register: (el: HTMLElement | null) => void;
+  children: React.ReactNode;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id });
-  return (
-    <li
-      ref={setNodeRef}
-      className={`drop-slot ${className}${isOver ? " over" : ""}`}
-    >
-      {children}
-    </li>
-  );
-}
-
-function DayColumn({ day, children }: { day: Date; children: React.ReactNode }) {
   const today = isSameDay(day, new Date());
+  const { setNodeRef, isOver } = useDroppable({ id: `day:${index}` });
+
   return (
-    <section className={`column day${today ? " today" : ""}`}>
-      <h2>
-        {day.toLocaleDateString(undefined, { weekday: "short" })}
+    <section className={`day-col${today ? " today" : ""}`}>
+      <h2 className="day-head">
+        <span>{day.toLocaleDateString(undefined, { weekday: "short" })}</span>
         <span className="count">{day.getDate()}</span>
       </h2>
-      {children}
+      <div
+        ref={(el) => {
+          setNodeRef(el);
+          register(el);
+        }}
+        className={`day-track${isOver ? " over" : ""}`}
+      >
+        {/* The rules, repeated per column rather than laid across the grid.
+            A single set of lines behind seven columns cannot pass *behind* a
+            block and in front of the gaps beside it, which is the one thing
+            they have to do. */}
+        {marks.map((m) => (
+          <span
+            key={m.min}
+            className="hour-rule"
+            aria-hidden="true"
+            style={{ bottom: `${((m.min - GRID_START_MIN) / span) * 100}%` }}
+          />
+        ))}
+        {children}
+      </div>
     </section>
   );
 }
 
 /**
- * One block: work, a routine, or a lecture.
+ * One block on the bar: work, a routine, or a lecture.
  *
- * A routine is not editable here — its time comes from the routine, and
- * changing it for one Tuesday only would make the routine a lie everywhere
- * else. Edit the routine below instead.
+ * Closed, it is a name and a colour and nothing else. That is the whole design
+ * of it — seven columns of cards each carrying a time range, a class, a length
+ * and a Remove link was a wall of text where a chart should be, and none of
+ * those four things is what you are looking for when you glance at a Thursday.
  *
- * A lecture is. It is a mirror of Google's row, and moving or dropping it says
- * something about your week rather than about the lecture: nothing here is
- * ever written back to the calendar, so skipping a class does not email
- * anybody.
+ * Open, it says everything, over the top of the column. Over rather than
+ * inside: a card that grew would push its neighbours up the axis and the chart
+ * would briefly be wrong, which is a strange thing for a chart to do because
+ * somebody looked at it.
+ *
+ * There is no Remove. Dragging it into the Unplanned rail is how things leave
+ * the board, and it is the same gesture reversed that brings them back.
  */
-/**
- * Stop a drag from starting, but only on an actual control.
- *
- * Hung on the rows inside a block card, which stretch the full width of it.
- * The alternative — the row itself refusing the gesture — turned every gap in
- * those rows into dead space on a card that drags from everywhere else.
- */
-function keepControlsOutOfTheDrag(e: React.PointerEvent) {
-  const el = e.target as HTMLElement | null;
-  if (el?.closest("button, input, select, textarea, a, [role='button']")) {
-    e.stopPropagation();
-  }
-}
-
-function BlockCard({
-  block,
-  slot,
-  gap,
+function BlockBar({
+  placed,
+  span,
+  hue,
+  title,
+  open,
+  flip,
+  vflip,
+  onToggle,
   task,
   routine,
   cls,
   onRetime,
   onResize,
-  onClear,
   onOpenClass,
 }: {
-  block: PlanBlock;
-  slot: string;
-  gap: string;
+  placed: Placed<PlanBlock>;
+  span: number;
+  hue: string;
+  title: string;
+  open: boolean;
+  flip: boolean;
+  vflip: boolean;
+  onToggle: () => void;
   task: Task | null;
   routine: Routine | null;
   cls: Map<string, Class>;
   onRetime: (hhmm: string) => void;
   onResize: (hhmm: string) => void;
-  onClear: () => void;
   onOpenClass: (id: string) => void;
 }) {
+  const block = placed.item;
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `block:${block.id}`,
   });
-  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: slot });
-
+  const box = geometry(placed, span);
+  const minutes = placed.endMin - placed.startMin;
   const event = Boolean(block.google_event_id);
   const klass = task?.class_id ? cls.get(task.class_id) : undefined;
-  const hue = routine || event ? "hue-none" : klass ? `hue-${klass.color}` : "hue-none";
-  const title = task?.title ?? block.title ?? routine?.title ?? "Untitled";
-  const start = new Date(block.starts_at);
-  const end = new Date(block.ends_at);
   const past = Date.parse(block.ends_at) <= Date.now();
 
+  const pop = useRef<HTMLDivElement | null>(null);
+
+  /*
+   * Click anywhere else and it closes.
+   *
+   * Only mounted while something is open, so the common case — reading the
+   * chart — costs no listener at all. `pointerdown` rather than `click`, so a
+   * drag starting elsewhere closes the panel as it begins rather than after it
+   * lands.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => {
+      if (!pop.current?.contains(e.target as Node)) onToggle();
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onToggle();
+    };
+    // Deferred a tick: the pointerdown that opened this is still on its way up.
+    const t = setTimeout(() => {
+      document.addEventListener("pointerdown", away);
+      document.addEventListener("keydown", esc);
+    });
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("pointerdown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open, onToggle]);
+
   return (
-    <>
-      <li
-        ref={(node) => {
-          setNodeRef(node);
-          setDropRef(node);
-        }}
-        {...listeners}
-        {...attributes}
-        className={`card block ${hue}${isDragging ? " dragging" : ""}${
-          routine ? " routine" : ""
-        }${event ? " event" : ""}${block.locked ? " locked" : ""}${
-          past ? " past" : ""
-        }${isOver ? " slot-over" : ""}`}
-      >
-        {/*
-          The controls opt out of the drag rather than the card opting in.
+    <div
+      ref={setNodeRef}
+      {...listeners}
+      {...attributes}
+      onClick={onToggle}
+      className={`bar ${hue}${isDragging ? " dragging" : ""}${
+        routine ? " routine" : ""
+      }${event ? " event" : ""}${block.locked ? " locked" : ""}${
+        past ? " past" : ""
+      }${minutes < SLIVER_MINUTES ? " sliver" : ""}${open ? " open" : ""}`}
+      style={{
+        bottom: `${box.bottom * 100}%`,
+        height: `${box.height * 100}%`,
+        left: `${box.left * 100}%`,
+        width: `${box.width * 100}%`,
+      }}
+      title={`${title} · ${clockOf(block.starts_at)}–${clockOf(block.ends_at)}`}
+    >
+      {/* The name, and only the name. A block too short to hold one is left as
+          a bare stripe of colour rather than given an ellipsis to wear — three
+          dots in a class colour say less than the colour does on its own. */}
+      <span className="bar-name">{title}</span>
 
-          The handle used to be the title alone, which meant most of the card
-          was inert and you had to find the one line that moved it. Now the
-          card drags from anywhere and the two things that are not a drag —
-          the clock and the buttons — stop the gesture before it starts. The
-          five-pixel activation distance already lets an ordinary click
-          through; this covers the click that wanders.
-
-          The opting-out is per control, not per row. These rows are full
-          width, so a row that swallowed the gesture made the blank space
-          beside the clock and to the left of Remove inert — a large part of
-          the card that looked draggable and was not.
-        */}
+      {open && (
         <div
-          className="row block-time"
-          onPointerDown={keepControlsOutOfTheDrag}
+          ref={pop}
+          className={`bar-pop${flip ? " flip" : ""}${vflip ? " vflip" : ""}`}
+          /* The panel is not a handle and not a way to open something else.
+             Both gestures are already spoken for by the block underneath it. */
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
         >
+          <p className="pop-title">{title}</p>
+
           {/*
-            The time is the control. Both ends of it.
-
-            There was a Move button beside it that opened a picker showing the
-            same number the card was already displaying — two things saying one
-            thing, and the editable one was the one that did not look editable.
-            The range then read as one control that only moved the start, which
-            had the same fault one layer down: the card showed a time you could
-            not change sitting next to one you could. So it is two pickers and
-            a dash, and the end one is how long the work takes.
+            The time is the control. Both ends of it, because the end is how
+            long the work takes and that is the number a plan is most often
+            wrong about.
           */}
-          <TimePicker
-            value={hhmmOf(start.getHours() * 60 + start.getMinutes())}
-            compact
-            display={clockOf(block.starts_at)}
-            onChange={onRetime}
-          />
-          <span className="muted block-dash" aria-hidden="true">
-            –
-          </span>
-          <TimePicker
-            value={hhmmOf(end.getHours() * 60 + end.getMinutes())}
-            compact
-            display={clockOf(block.ends_at)}
-            onChange={onResize}
-          />
-          <span className="muted small block-length">
-            {formatMinutes(blockMinutes(block))}
-          </span>
+          <div className="row pop-time">
+            <TimePicker
+              value={hhmmOf(
+                new Date(block.starts_at).getHours() * 60 +
+                  new Date(block.starts_at).getMinutes(),
+              )}
+              compact
+              display={clockOf(block.starts_at)}
+              onChange={onRetime}
+            />
+            <span className="muted" aria-hidden="true">
+              –
+            </span>
+            <TimePicker
+              value={hhmmOf(
+                new Date(block.ends_at).getHours() * 60 +
+                  new Date(block.ends_at).getMinutes(),
+              )}
+              compact
+              display={clockOf(block.ends_at)}
+              onChange={onResize}
+            />
+            <span className="muted small pop-length">{formatMinutes(minutes)}</span>
+          </div>
+
+          <div className="pop-meta small">
+            {event ? (
+              <span className="muted">Calendar</span>
+            ) : routine ? (
+              <span className="muted">Repeats</span>
+            ) : klass ? (
+              <button className="link" onClick={() => onOpenClass(klass.id)}>
+                {klass.name}
+              </button>
+            ) : null}
+            {task?.due_at && (
+              <span className="muted">Due {formatDue(task.due_at)}</span>
+            )}
+          </div>
+
+          {/* Said once, where the button used to be, because a card with
+              nothing to press on it should say what the gesture is. */}
+          <p className="muted small pop-hint">Drag to Unplanned to take it off.</p>
         </div>
-
-        <span className="block-title">{title}</span>
-
-        <div
-          className="row block-actions"
-          onPointerDown={keepControlsOutOfTheDrag}
-        >
-          {event ? (
-            <span className="muted small">Calendar</span>
-          ) : routine ? (
-            <span className="muted small">Repeats</span>
-          ) : klass ? (
-            <button className="link" onClick={() => onOpenClass(klass.id)}>
-              {klass.name}
-            </button>
-          ) : null}
-          <span className="grow" />
-          <button
-            className="link danger"
-            onClick={onClear}
-            title={
-              event
-                ? "Not attending. Never written back to Google."
-                : routine
-                  ? "Removes it from every day it repeats on"
-                  : undefined
-            }
-          >
-            Remove
-          </button>
-        </div>
-
-      </li>
-      <DropSlot id={gap} />
-    </>
+      )}
+    </div>
   );
 }
 

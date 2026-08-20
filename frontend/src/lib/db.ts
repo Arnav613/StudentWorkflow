@@ -496,6 +496,30 @@ export async function moveBlock(
   );
 }
 
+/**
+ * Move a block without claiming a person meant to.
+ *
+ * `moveBlock` locks, because a drag is somebody saying "here, and leave it
+ * here". A block shoved later to make room for that drag is saying nothing at
+ * all — it is a consequence — and locking it would pin an entire evening to the
+ * wall every time one task was dropped into the middle of it, with Replan then
+ * refusing to tidy any of it up.
+ */
+export async function shiftBlock(
+  id: string,
+  starts_at: string,
+  ends_at: string,
+): Promise<PlanBlock> {
+  return unwrap(
+    await supabase
+      .from("plan_blocks")
+      .update({ starts_at, ends_at })
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
 /** Hand a locked block back to the planner. */
 export async function unlockBlock(id: string): Promise<PlanBlock> {
   return unwrap(

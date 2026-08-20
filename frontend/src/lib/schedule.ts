@@ -27,9 +27,16 @@ import type { PlanBlock, Routine, RoutineOverride, Task } from "./types";
  */
 export const PLAN_DAYS = 7;
 
-/** Waking hours the planner is allowed to fill. Outside these it plans nothing. */
+/**
+ * Waking hours the planner is allowed to fill. Outside these it plans nothing.
+ *
+ * Fifteen of them, and the number matters more than it used to: the week is
+ * drawn to scale now, so this pair is the axis of the chart as well as the
+ * planner's licence. Fourteen hours of axis and a day that routinely ran to
+ * eleven meant the last block of every evening hung off the top of its column.
+ */
 export const DAY_START_HOUR = 8;
-export const DAY_END_HOUR = 22;
+export const DAY_END_HOUR = 23;
 
 /**
  * The grid every planned block lands on.
@@ -46,12 +53,6 @@ export const SLOT_MINUTES = 30;
 export function snapUp(ms: number): number {
   const slot = SLOT_MINUTES * MINUTE;
   return Math.ceil(ms / slot) * slot;
-}
-
-/** To the closest half hour. Used where a person aimed, not where time began. */
-export function snapNearest(ms: number): number {
-  const slot = SLOT_MINUTES * MINUTE;
-  return Math.round(ms / slot) * slot;
 }
 
 /** Minutes, to a whole number of half hours, never down to nothing. */
@@ -330,89 +331,20 @@ export function dayKey(d: Date | string): string {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
-/**
- * Where a block dropped between two neighbours should actually start.
+/*
+ * Where a dropped block starts used to be decided here, by `timeForSlot`,
+ * from the two neighbours it landed between.
  *
- * The rule is: it keeps its own time, and only a conflict moves it.
+ * It has gone to `lib/weekgrid.ts` and become `insertAt`, because the question
+ * changed underneath it. A column of stacked cards had nothing to offer a drop
+ * except "which two cards" — so the rule had to guess a time from the gap, and
+ * every version of that guess was wrong for somebody. A column drawn to scale
+ * has a real answer: the height of the cursor *is* a time. Nothing is inferred
+ * and nothing has to be invented.
  *
- * Two earlier versions got this wrong in opposite directions. The first kept
- * the clock and changed only the date, so a block dropped at the foot of
- * Thursday snapped back to the top of the column. The second took the top of
- * the gap always, so dragging a six o'clock session onto an empty Saturday
- * made it eight in the morning — the app answering a question nobody asked.
- * A drag across columns usually means "this, but on Saturday", and the time
- * was never the part being changed.
- *
- * So the dropped time is the block's own, moved to the new day, and it is
- * overruled only where it will not fit:
- *
- *   - it runs into the block above  → it starts when that one ends
- *   - it runs into the block below  → it is pulled back to end when that
- *                                     one starts, but never above the block
- *                                     above it
- *   - it fits between them          → nothing happens to it at all
- *
- * A task dragged out of the Unplanned rail has no time of its own yet, so it
- * takes the top of the gap. That is the one case where the app has to invent
- * a number, and the top of the gap is the least surprising one available.
+ * Two rules for placing a block, in two files, disagreeing about what a drop
+ * means, is exactly the sort of thing that quietly comes back.
  */
-export function timeForSlot({
-  day,
-  after,
-  before,
-  minutes,
-  current,
-  now = Date.now(),
-}: {
-  day: Date;
-  /** The item the block was dropped below, if any. */
-  after: { ends_at: string } | null;
-  /** The item it was dropped above, if any. */
-  before: { starts_at: string } | null;
-  minutes: number;
-  /** Where it is now. Null for something that has never been placed. */
-  current: Date | null;
-  now?: number;
-}): Date {
-  const span = minutes * MINUTE;
-
-  // The earliest this day will accept: after whatever it was dropped below,
-  // and never in an hour that has already gone.
-  const opensAt = Math.max(
-    at(day, DAY_START_HOUR * 60),
-    isSameDay(day, new Date(now)) ? snapUp(now) : 0,
-  );
-  const lower = after ? snapUp(Date.parse(after.ends_at)) : opensAt;
-  const upper = before ? Date.parse(before.starts_at) : at(day, 24 * 60);
-
-  // Its own clock, on the new day. This is the answer unless something is in
-  // the way of it.
-  const wanted = current
-    ? at(day, current.getHours() * 60 + current.getMinutes())
-    : null;
-
-  let start: number;
-  if (wanted === null) start = lower;
-  else if (wanted < lower) start = lower;
-  else if (wanted + span > upper) start = Math.max(lower, snapNearest(upper - span));
-  else start = wanted;
-
-  // Last resort, and only against the edges of the day itself. An overlap with
-  // a neighbour is survivable — a double-booked hour you created on purpose is
-  // information — but a block hanging off the end of Tuesday is not a time.
-  const dayEnd = at(day, 24 * 60);
-  return new Date(
-    Math.max(at(day, 0), Math.min(start, snapNearest(dayEnd - span))),
-  );
-}
-
-function isSameDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
 
 /* ---------------------------------------------------------------------------
    The planner
@@ -581,7 +513,7 @@ export function planWeek({
   const floor = from.getTime();
 
   // 1 and 2. The shape of the week, which this function does not get a vote
-  // on. Shared with the forecast — see `commitments`.
+  // on. See `commitments`.
   const { blocks, occupied, lockedMinutes } = commitments({
     routines,
     routineOverrides,

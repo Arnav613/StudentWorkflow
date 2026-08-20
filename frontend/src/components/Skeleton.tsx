@@ -69,17 +69,18 @@ export function BoardSkeleton() {
 }
 
 /**
- * The forecast: one wide block where the chart goes, and a few rows under it.
+ * The week: one wide block where the chart goes, and the rail under it.
  *
- * Deliberately not a board or a grid. The whole point of a skeleton is that
- * the furniture does not move when the data lands, and the forecast's
- * furniture is a single panel two hundred pixels tall.
+ * Deliberately not a board of cards. The whole point of a skeleton is that the
+ * furniture does not move when the data lands, and the week's furniture is a
+ * chart and a list — which is exactly what it stopped being a board of cards
+ * in order to become.
  */
-export function ForecastSkeleton() {
+export function WeekSkeleton() {
   return (
     <>
       <span className="sr-only" role="status">
-        Loading your forecast
+        Loading your week
       </span>
       <div className="stack" aria-hidden="true">
         <section className="panel">
