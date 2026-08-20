@@ -37,10 +37,23 @@ function label(value: string): string {
 export default function TimePicker({
   value,
   disabled,
+  compact,
+  display,
   onChange,
 }: {
   value: string;
   disabled?: boolean;
+  /**
+   * Render the trigger as the text itself — no field chrome, no icon.
+   *
+   * For the one place a time is not a form field but the thing on the card:
+   * the week grid, where the clock on a block *is* the control that changes
+   * it. A boxed input there would be a second copy of a number the card is
+   * already showing, which is what the Move button used to be.
+   */
+  compact?: boolean;
+  /** What the trigger says, when that is more than the value alone — a range. */
+  display?: string;
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -100,7 +113,7 @@ export default function TimePicker({
   }
 
   return (
-    <div className="picker" ref={wrap}>
+    <div className={`picker${compact ? " picker-compact" : ""}`} ref={wrap}>
       <button
         type="button"
         ref={trigger}
@@ -110,11 +123,13 @@ export default function TimePicker({
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
       >
-        <span className="picker-icon" aria-hidden="true">
-          ◷
-        </span>
-        <span className="grow ellipsis">{label(value)}</span>
-        <span className="picker-caret" aria-hidden="true" />
+        {!compact && (
+          <span className="picker-icon" aria-hidden="true">
+            ◷
+          </span>
+        )}
+        <span className="grow ellipsis">{display ?? label(value)}</span>
+        {!compact && <span className="picker-caret" aria-hidden="true" />}
       </button>
 
       {open && (

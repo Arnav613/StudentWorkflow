@@ -2102,17 +2102,71 @@ button.link.danger:hover:not(:disabled) {
 
 .block-time {
   gap: 0.35rem;
+  min-width: 0;
 }
 
+/*
+ * The clock on a card, as a control.
+ *
+ * Bare text until you go near it, and then obviously a button. It replaced a
+ * "Move" link that opened a picker showing the same number the card was
+ * already displaying — two things saying one thing, and the editable one was
+ * the one that did not look editable.
+ */
+.picker-compact {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.picker-compact > .picker-trigger {
+  padding: 0.05rem 0.25rem;
+  margin-left: -0.25rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm, 5px);
+  width: auto;
+  cursor: pointer;
+}
+
+.picker-compact > .picker-trigger:hover,
+.picker-compact > .picker-trigger[aria-expanded="true"] {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  border-color: var(--border);
+}
+
+/*
+ * Three lines, then an ellipsis, and it may break mid-word.
+ *
+ * A course title is not a sentence with convenient spaces in it —
+ * "MATH-2101/Multivariable" is one unbreakable token as far as the browser is
+ * concerned, and in a column nine rem wide it used to hang straight out of the
+ * card. `anywhere` is the only value that will split a run like that; the
+ * clamp then stops a long one pushing the rest of Thursday down the page.
+ */
 .block-title {
   font-weight: 500;
   line-height: 1.3;
-  /* Two lines, then an ellipsis. A seven-column grid has no room for a title
-     that pushes the rest of Thursday down the page. */
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+  min-width: 0;
+}
+
+/* The title is the drag handle now — the time under it became a button, and a
+   card that dragged from everywhere would swallow the click that opens it. */
+.block-title.grabbable {
+  cursor: grab;
+}
+
+.block-title.grabbable:active {
+  cursor: grabbing;
 }
 
 .block-actions {
@@ -2130,8 +2184,10 @@ button.link.danger:hover:not(:disabled) {
 }
 
 /* A locked block is the one thing Replan will not touch. A solid left edge in
-   the accent says "someone decided this" without another chip in a column
-   that is already short of width — the "Kept" tag says the rest. */
+   the accent is the whole of how that is said: there was a "Kept" tag here,
+   and a chip explaining an internal rule of the scheduler was noise on a card
+   in a column already short of width. The edge is enough for the one person
+   who put it there. */
 .list > li.card.block.locked {
   border-left-width: 4px;
   border-left-color: var(--accent);
@@ -2219,6 +2275,143 @@ button.link.danger:hover:not(:disabled) {
 .list.routine-list > li.paused {
   opacity: 0.5;
   text-decoration: line-through;
+}
+
+/* ---- Dropping ----------------------------------------------------------- */
+
+/*
+ * The gaps between cards, which are where a block is now actually aimed.
+ *
+ * A hairline at rest and a real target mid-drag. Dropping used to mean "this
+ * column", and the app then kept the block's old clock — so an 8am session
+ * dragged to the foot of Thursday snapped back to the top of it. These say
+ * *between these two*, and the time follows from that.
+ *
+ * They cannot be a permanent gutter: seven columns with a visible lane between
+ * every pair of cards would spend more height on lanes than on work.
+ */
+.drop-slot {
+  list-style: none;
+  height: 0.25rem;
+  margin: -0.1rem 0;
+  border-radius: var(--r-pill);
+  transition: height 90ms ease, background-color 90ms ease;
+}
+
+.drop-slot.over {
+  height: 1.6rem;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* The rest of the column below the last card: "after everything else today". */
+.slot-tail {
+  height: 1.4rem;
+  margin-bottom: -0.6rem;
+}
+
+/* An empty day is one big target, and says the word it always said. */
+.slot-empty {
+  height: auto;
+  min-height: 3rem;
+  display: flex;
+  align-items: center;
+  padding: 0.4rem 0.15rem;
+  margin: 0;
+}
+
+.slot-empty.over {
+  height: auto;
+}
+
+/* A card is a target too, meaning "take this one's place, push it down". The
+   thin gaps alone would be a game of darts in a nine-rem column. */
+.list > li.card.block.slot-over {
+  border-color: var(--accent);
+  box-shadow: inset 0 2px 0 -1px var(--accent);
+}
+
+/* An hour that has gone by. Dimmed rather than hidden: the column would
+   otherwise start mid-afternoon and today would look like it never happened.
+   If the work in it is not done, the task is already back in the rail. */
+.list > li.card.block.past {
+  opacity: 0.55;
+}
+
+/* ---- The hours a column obeys ------------------------------------------- */
+
+.day-hours {
+  margin: -0.25rem 0 0.45rem;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* ---- The unplanned rail, as a place to drop things ---------------------- */
+
+.unplanned-rail {
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.unplanned-rail.over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+/*
+ * Rail items drag now, which is the whole point of the rail: it used to be a
+ * read-only list of complaints, and the only way to act on one was the Plan
+ * button — a control that rewrote the entire week to move a single reading.
+ */
+.rail-item {
+  cursor: grab;
+  border-radius: var(--r-sm, 5px);
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+}
+
+.rail-item:active {
+  cursor: grabbing;
+}
+
+.rail-item:hover {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.rail-item.dragging {
+  opacity: 0.4;
+}
+
+/* ---- Study hours -------------------------------------------------------- */
+
+.hours-suggest {
+  margin-bottom: 0.9rem;
+}
+
+.hours-suggest-row {
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.list.hours-list > li {
+  gap: 0.5rem;
+  padding: 0.35rem 0.15rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.list.hours-list > li:last-child {
+  border-bottom: 0;
+}
+
+.list.hours-list > li.paused {
+  opacity: 0.5;
+}
+
+.hours-day {
+  min-width: 6rem;
+  font-weight: 500;
 }
 
 /*

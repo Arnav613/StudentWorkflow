@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as db from "../lib/db";
-import type { Class, PlanBlock, Routine, Task, TaskStatus } from "../lib/types";
+import type {
+  Class,
+  PlanBlock,
+  Routine,
+  StudyWindow,
+  Task,
+  TaskStatus,
+} from "../lib/types";
 
 function message(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) return String(e.message);
@@ -20,6 +27,7 @@ export function useData(userId: string) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
+  const [studyWindows, setStudyWindows] = useState<StudyWindow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,20 +52,26 @@ export function useData(userId: string) {
       // just aged out. Doing it the other way round shows a card for one
       // render and then vanishes it.
       await db.archiveCompleted();
-      // Four small queries in parallel. Routines are a handful of rows and
-      // plan blocks are bounded by the horizon, so they join the one shared
-      // load rather than becoming a second cache that can go stale on its own
-      // — refresh() stays the only invalidation in the app.
-      const [c, t, r, p] = await Promise.all([
+      // Five small queries in parallel. Routines and study windows are a
+      // handful of rows and plan blocks are bounded by the horizon, so they
+      // join the one shared load rather than becoming a second cache that can
+      // go stale on its own — refresh() stays the only invalidation in the app.
+      //
+      // The plan blocks now include mirrored calendar events, which is the
+      // point: the week grid draws lectures from this load, at the speed of
+      // every other row, instead of waiting on Google after it has painted.
+      const [c, t, r, p, w] = await Promise.all([
         db.listClasses(true),
         db.listTasks(),
         db.listRoutines(),
         db.listPlanBlocks(planFrom),
+        db.listStudyWindows(),
       ]);
       setClasses(c);
       setTasks(t);
       setRoutines(r);
       setPlanBlocks(p);
+      setStudyWindows(w);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -108,6 +122,7 @@ export function useData(userId: string) {
     tasks,
     routines,
     planBlocks,
+    studyWindows,
     planFrom,
     loading,
     error,
@@ -118,6 +133,7 @@ export function useData(userId: string) {
     setTasks,
     setRoutines,
     setPlanBlocks,
+    setStudyWindows,
     userId,
   };
 }

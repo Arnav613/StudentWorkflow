@@ -4,31 +4,40 @@ import {
   DragOverlay,
   PointerSensor,
   KeyboardSensor,
+  pointerWithin,
+  rectIntersection,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
 import * as db from "../lib/db";
-import { getCalendar, type CalendarEvent, type CalendarResponse } from "../lib/api";
+import { getCalendar } from "../lib/api";
 import { toast } from "../lib/toast";
 import { formatDue } from "../lib/board";
 import {
+  MAX_SESSION_MINUTES,
+  addDays,
   blockMinutes,
   byDay,
   classMedians,
   clockOf,
+  clockOfMinutes,
   formatMinutes,
+  hhmmOf,
   planDays,
   planWeek,
+  timeForSlot,
   unscheduled,
 } from "../lib/schedule";
 import RoutinesPanel from "../components/RoutinesPanel";
+import HoursPanel from "../components/HoursPanel";
 import TimePicker from "../components/TimePicker";
 import type { DataStore } from "../hooks/useData";
-import type { Class, PlanBlock, Routine, Task } from "../lib/types";
+import type { Class, PlanBlock, Routine, StudyWindow, Task } from "../lib/types";
 
 const DAYS = 7;
 
@@ -43,6 +52,13 @@ const DAYS = 7;
  * itself while you are reading it is not a plan — it is a slot machine — and
  * the moment it moves something you had mentally committed to, you stop
  * believing any of it.
+ *
+ * Everything on the grid is a row in `plan_blocks` — work, routines and
+ * lectures alike. Lectures used to be fetched from Google on every open and
+ * drawn on top, which cost a visible pause and made them the one thing on the
+ * board that could not be moved. They are mirrored now (see `db.syncCalendar`),
+ * so the grid paints from one query and a lecture you are not attending can be
+ * dragged off it like anything else — locally, never back to Google.
  */
 export default function WeekPage({
   store,
@@ -51,9 +67,18 @@ export default function WeekPage({
   store: DataStore;
   onOpenClass: (id: string) => void;
 }) {
-  const { classes, tasks, routines, planBlocks, planFrom, refresh, userId } = store;
+  const {
+    classes,
+    tasks,
+    routines,
+    planBlocks,
+    studyWindows,
+    planFrom,
+    refresh,
+    userId,
+  } = store;
   const [generating, setGenerating] = useState(false);
-  const [calendar, setCalendar] = useState<CalendarResponse | "off" | null>(null);
+  const [calendarGranted, setCalendarGranted] = useState<boolean | null>(null);
 
   const days = useMemo(() => planDays(planFrom, DAYS), [planFrom]);
   const medians = useMemo(() => classMedians(tasks), [tasks]);
@@ -72,51 +97,81 @@ export default function WeekPage({
   );
 
   /*
-   * The calendar is fetched once, on open, and its failure is never fatal.
-   * Render sleeps, the scope may never have been granted, and the whole
-   * feature is "the planner also knows about your lectures" — none of which
-   * is worth a red panel over a week that is otherwise correct.
+   * The calendar refresh, behind the render rather than in front of it.
+   *
+   * The grid is already on screen by the time this runs — it is drawn from
+   * plan_blocks, which includes the last open's lectures — so this is a
+   * reconciliation, not a load. It only calls refresh() when something
+   * actually moved, because re-rendering the week to arrive at the same seven
+   * columns is a flicker charged for nothing.
+   *
+   * Every failure means the same thing: carry on with the copy we have. A dead
+   * grant, a sleeping Render and a deployment with Google switched off are
+   * three different problems and none of them is this screen's to report — the
+   * Classes tab already owns the reconnect banner.
    */
   useEffect(() => {
     let live = true;
-    getCalendar(DAYS)
-      .then((res) => live && setCalendar(res))
-      // Every failure means the same thing here: plan without it. A dead
-      // grant, a sleeping Render and a deployment with Google switched off
-      // are three different problems and none of them is this screen's to
-      // report — the Classes tab already owns the reconnect banner.
-      .catch(() => live && setCalendar("off"));
+    void (async () => {
+      try {
+        const res = await getCalendar(DAYS);
+        if (!live) return;
+        setCalendarGranted(res.granted);
+        if (!res.granted) return;
+        const changed = await db.syncCalendar(
+          userId,
+          res.events,
+          planFrom,
+          addDays(planFrom, DAYS),
+        );
+        if (changed && live) await refresh();
+      } catch {
+        if (live) setCalendarGranted(false);
+      }
+    })();
     return () => {
       live = false;
     };
+    // Once per open. The plan horizon does not move while the tab is up.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /*
-   * Events are rendered, not stored. They are Google's rows, refetched every
-   * open, and copying them into plan_blocks would make this app the second
-   * owner of a fact it cannot edit — a lecture that moved would then be in
-   * two places, one of them wrong.
-   */
-  const events: CalendarEvent[] =
-    calendar && calendar !== "off" && calendar.granted ? calendar.events : [];
+  /* --- What goes where ---------------------------------------------------- */
 
-  const blocksByDay = byDay(planBlocks, days);
-  const eventsByDay = byDay(events, days);
-  const outstanding = unscheduled(tasks, planBlocks, medians)
+  const onBoard = planBlocks.filter((b) => !b.dismissed);
+  const blocksByDay = byDay(onBoard, days);
+
+  /** Lectures you have not dropped: hours the planner may not use. */
+  const busy = onBoard.filter((b) => b.google_event_id);
+  /** Lectures you have dropped: they wait in the rail, and cost nothing. */
+  const skipped = planBlocks.filter((b) => b.google_event_id && b.dismissed);
+
+  const outstanding = unscheduled(tasks, onBoard, medians)
     .map((u) => ({ ...u, task: taskById.get(u.task_id) }))
-    .filter((u): u is typeof u & { task: Task } => Boolean(u.task));
+    .filter((u): u is typeof u & { task: Task } => Boolean(u.task))
+    .sort(
+      (a, b) =>
+        (Date.parse(a.task.due_at ?? "") || Infinity) -
+        (Date.parse(b.task.due_at ?? "") || Infinity),
+    );
 
-  const plannedMinutes = planBlocks
-    .filter((b) => b.task_id)
+  // Hours still ahead of you, not hours the plan once contained. Counting a
+  // block that has already gone by would have the header call work planned
+  // while the rail below it calls the same work unplanned — and the rail is
+  // the one telling the truth.
+  const plannedMinutes = onBoard
+    .filter((b) => b.task_id && Date.parse(b.ends_at) > Date.now())
     .reduce((sum, b) => sum + blockMinutes(b), 0);
+
+  const missed = outstanding.filter((u) => u.missed).length;
 
   async function regenerate() {
     setGenerating(true);
     try {
-      // The scheduler takes intervals, not titles. It is given the events
+      // The scheduler takes intervals, not titles. It is given the lectures
       // because they are the same shape; it has no idea what any of them are,
       // and that is the correct amount for a scheduler to know.
-      const busy = events;
+      //
       // `from` is now, not planFrom: today's morning is over and nothing can
       // be scheduled into it. The columns still start at midnight so the week
       // reads as a week.
@@ -124,7 +179,8 @@ export default function WeekPage({
         tasks,
         routines,
         busy,
-        locked: planBlocks.filter((b) => b.locked),
+        locked: onBoard.filter((b) => b.locked && !b.google_event_id),
+        windows: studyWindows,
         from: new Date(),
         days: DAYS,
         medians,
@@ -138,7 +194,7 @@ export default function WeekPage({
         toast(
           beyond
             ? `Planned. ${beyond} thing${beyond === 1 ? "" : "s"} cannot fit before ${beyond === 1 ? "its" : "their"} deadline.`
-            : `Planned. ${plan.unplaced.length} thing${plan.unplaced.length === 1 ? "" : "s"} did not fit this week.`,
+            : `Planned. ${plan.unplaced.length} thing${plan.unplaced.length === 1 ? "" : "s"} did not fit your hours this week.`,
           "info",
         );
       } else {
@@ -151,39 +207,10 @@ export default function WeekPage({
     }
   }
 
-  /* --- Manual edits. Both of these lock the block. See db.moveBlock. ------ */
+  /* --- Manual edits. All of these lock the block. See db.moveBlock. -------- */
 
-  async function moveTo(block: PlanBlock, day: Date) {
-    const start = new Date(block.starts_at);
-    const next = new Date(
-      day.getFullYear(),
-      day.getMonth(),
-      day.getDate(),
-      start.getHours(),
-      start.getMinutes(),
-    );
-    await commitMove(block, next);
-  }
-
-  async function retime(block: PlanBlock, hhmm: string) {
-    const start = new Date(block.starts_at);
-    const [h, m] = hhmm.split(":").map(Number);
-    const next = new Date(
-      start.getFullYear(),
-      start.getMonth(),
-      start.getDate(),
-      h,
-      m,
-    );
-    await commitMove(block, next);
-  }
-
-  async function commitMove(block: PlanBlock, start: Date) {
-    if (start.getTime() < Date.now()) {
-      toast("That time has already passed", "info");
-      return;
-    }
-    const length = blockMinutes(block);
+  async function commitMove(block: PlanBlock, start: Date, minutes?: number) {
+    const length = minutes ?? blockMinutes(block);
     const end = new Date(start.getTime() + length * 60_000);
     try {
       await db.moveBlock(block.id, start.toISOString(), end.toISOString());
@@ -193,9 +220,30 @@ export default function WeekPage({
     }
   }
 
-  async function drop(block: PlanBlock) {
+  /** The time on the tile, changed on the tile. Keeps the block's length. */
+  async function retime(block: PlanBlock, hhmm: string) {
+    if (!hhmm) return;
+    const start = new Date(block.starts_at);
+    const [h, m] = hhmm.split(":").map(Number);
+    await commitMove(
+      block,
+      new Date(start.getFullYear(), start.getMonth(), start.getDate(), h, m),
+    );
+  }
+
+  /**
+   * Take something off the board.
+   *
+   * A lecture is dismissed rather than deleted — the row is a mirror of
+   * Google's, so a delete would last until the next refresh — and it lands in
+   * the rail, where it can be dragged back. Work is deleted, and the task it
+   * belonged to reappears in the rail on its own because its hours are no
+   * longer accounted for.
+   */
+  async function clear(block: PlanBlock) {
     try {
-      await db.deleteBlock(block.id);
+      if (block.google_event_id) await db.setDismissed(block.id, true);
+      else await db.deleteBlock(block.id);
       await refresh();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not remove that block", "error");
@@ -204,32 +252,115 @@ export default function WeekPage({
 
   /* --- Drag ---------------------------------------------------------------*/
 
-  const [dragging, setDragging] = useState<PlanBlock | null>(null);
+  type DragSubject =
+    | { kind: "task"; task: Task; minutes: number }
+    | { kind: "block"; block: PlanBlock; title: string; minutes: number };
+
+  const [dragging, setDragging] = useState<DragSubject | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor),
   );
 
-  function onDragStart(e: DragStartEvent) {
-    setDragging(planBlocks.find((b) => b.id === e.active.id) ?? null);
+  /*
+   * Pointer first, rectangles as a fallback.
+   *
+   * The drop targets on this screen are nested — a card inside a column — and
+   * the default rectangle test happily reports the column when the cursor is
+   * plainly on a card, which is how a block dropped at the bottom of Thursday
+   * used to land at the top of it. `pointerWithin` asks the only question the
+   * gesture is actually making: what is under the cursor. The fallback covers
+   * a keyboard drag, where there is no cursor to ask about.
+   */
+  const collision: CollisionDetection = (args) => {
+    const hits = pointerWithin(args);
+    return hits.length ? hits : rectIntersection(args);
+  };
+
+  function titleOf(block: PlanBlock): string {
+    if (block.google_event_id) return block.title ?? "Calendar";
+    if (block.task_id) return taskById.get(block.task_id)?.title ?? "Task";
+    return routineById.get(block.routine_id ?? "")?.title ?? "Routine";
   }
 
-  function onDragEnd(e: DragEndEvent) {
-    setDragging(null);
-    const target = e.over?.id;
-    if (typeof target !== "string" || !target.startsWith("day-")) return;
-    const day = days[Number(target.slice(4))];
-    const block = planBlocks.find((b) => b.id === e.active.id);
-    if (!day || !block) return;
-    const from = new Date(block.starts_at);
-    if (
-      from.getFullYear() === day.getFullYear() &&
-      from.getMonth() === day.getMonth() &&
-      from.getDate() === day.getDate()
-    ) {
-      return; // dropped back on its own day: not an edit, so do not lock it
+  function onDragStart(e: DragStartEvent) {
+    const id = String(e.active.id);
+    if (id.startsWith("task:")) {
+      const u = outstanding.find((o) => o.task_id === id.slice(5));
+      if (u) setDragging({ kind: "task", task: u.task, minutes: sitting(u.minutes) });
+      return;
     }
-    void moveTo(block, day);
+    const block = planBlocks.find((b) => b.id === id.slice("block:".length));
+    if (!block) return;
+    setDragging({
+      kind: "block",
+      block,
+      title: titleOf(block),
+      minutes: blockMinutes(block),
+    });
+  }
+
+  async function onDragEnd(e: DragEndEvent) {
+    const subject = dragging;
+    setDragging(null);
+    const over = e.over?.id;
+    if (!subject || typeof over !== "string") return;
+
+    /* Off the board, into the rail. */
+    if (over === "unplanned") {
+      if (subject.kind === "task") return;
+      await clear(subject.block);
+      return;
+    }
+
+    const at = parseDrop(over);
+    if (!at) return;
+    const day = days[at.day];
+    if (!day) return;
+
+    /*
+     * Where it lands is when it happens.
+     *
+     * The old rule kept the block's clock and only changed its date, so an 8am
+     * session dropped at the foot of Thursday snapped back to the top of the
+     * column — the app overruling the one instruction the drag carried. Now
+     * the gap you dropped into decides the time, and the block keeps only its
+     * length: a forty-minute reading dropped into a two-hour hole stays forty
+     * minutes, and the rest of the hole stays free.
+     */
+    const held = subject.kind === "task" ? null : subject.block.id;
+    const list = blocksByDay[at.day];
+    const start = timeForSlot({
+      day,
+      after: lastBefore(list, at.index, held),
+      minutes: subject.minutes,
+      windows: studyWindows,
+    });
+
+    if (start.getTime() + subject.minutes * 60_000 <= Date.now()) {
+      toast("That hour has already gone", "info");
+      return;
+    }
+
+    try {
+      if (subject.kind === "task") {
+        await db.createTaskBlock({
+          user_id: userId,
+          task_id: subject.task.id,
+          starts_at: start.toISOString(),
+          ends_at: new Date(start.getTime() + subject.minutes * 60_000).toISOString(),
+        });
+        await refresh();
+        return;
+      }
+      // A lecture dragged back out of the rail is un-dismissed by the same
+      // gesture that placed it. Two steps would mean restoring it and then
+      // being told it is somewhere you did not put it.
+      if (subject.block.dismissed) await db.setDismissed(subject.block.id, false);
+      await commitMove(subject.block, start, subject.minutes);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not place that", "error");
+    }
   }
 
   return (
@@ -244,7 +375,11 @@ export default function WeekPage({
           </p>
         </div>
         <button onClick={() => void regenerate()} disabled={generating}>
-          {generating ? "Planning…" : planBlocks.length ? "Replan" : "Plan the week"}
+          {generating
+            ? "Planning…"
+            : onBoard.some((b) => b.task_id)
+              ? "Replan"
+              : "Plan the week"}
         </button>
       </div>
 
@@ -256,110 +391,83 @@ export default function WeekPage({
           Classes tab raises it as part of the one reconnect prompt the app
           already has, so a permission is asked for in one place rather than
           wherever it happens to be missed. */}
-      {calendar === "off" || (calendar && !calendar.granted) ? (
+      {calendarGranted === false ? (
         <p className="muted small notice">
-          Planning without your calendar, so every waking hour counts as free.
+          Planning without your calendar, so every hour you have set aside counts
+          as free.
         </p>
       ) : null}
 
-      <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={collision}
+        onDragStart={onDragStart}
+        onDragEnd={(e) => void onDragEnd(e)}
+        onDragCancel={() => setDragging(null)}
+      >
         <div className="week">
           {days.map((day, i) => (
-            <DayColumn key={day.getTime()} index={i} day={day}>
-              {(() => {
-                /*
-                 * Plan and calendar in one column, in clock order.
-                 *
-                 * Merged here rather than upstream because they are genuinely
-                 * different things that happen to share an axis: a block is a
-                 * decision this app made and can move, an event is a fact from
-                 * Google that it can only read. Folding events into
-                 * `planBlocks` would let a drag try to move a lecture.
-                 */
-                const items = [
-                  ...blocksByDay[i].map((block) => ({
-                    at: Date.parse(block.starts_at),
-                    node: (
-                      <BlockCard
-                        key={block.id}
-                        block={block}
-                        task={block.task_id ? taskById.get(block.task_id) ?? null : null}
-                        routine={
-                          block.routine_id ? routineById.get(block.routine_id) ?? null : null
-                        }
-                        cls={classById}
-                        onRetime={(t) => void retime(block, t)}
-                        onDrop={() => void drop(block)}
-                        onOpenClass={onOpenClass}
-                      />
-                    ),
-                  })),
-                  ...eventsByDay[i].map((event) => ({
-                    at: Date.parse(event.starts_at),
-                    node: <EventCard key={`e-${event.id}`} event={event} />,
-                  })),
-                ].sort((a, b) => a.at - b.at);
-
-                if (!items.length) {
-                  return <p className="muted small day-empty">Free</p>;
-                }
-                return <ul className="list blocks">{items.map((i) => i.node)}</ul>;
-              })()}
+            <DayColumn key={day.getTime()} day={day} windows={studyWindows}>
+              {blocksByDay[i].length === 0 ? (
+                <ul className="list blocks">
+                  <DropSlot id={`tail:${i}`} className="slot-empty">
+                    <span className="muted small">Free</span>
+                  </DropSlot>
+                </ul>
+              ) : (
+                <ul className="list blocks">
+                  <DropSlot id={`gap:${i}:0`} />
+                  {blocksByDay[i].map((block, k) => (
+                    <BlockCard
+                      key={block.id}
+                      block={block}
+                      slot={`card:${i}:${k}`}
+                      gap={`gap:${i}:${k + 1}`}
+                      task={block.task_id ? taskById.get(block.task_id) ?? null : null}
+                      routine={
+                        block.routine_id
+                          ? routineById.get(block.routine_id) ?? null
+                          : null
+                      }
+                      cls={classById}
+                      onRetime={(t) => void retime(block, t)}
+                      onClear={() => void clear(block)}
+                      onOpenClass={onOpenClass}
+                    />
+                  ))}
+                  <DropSlot id={`tail:${i}`} className="slot-tail" />
+                </ul>
+              )}
             </DayColumn>
           ))}
         </div>
 
+        {/*
+          The rail exists because a planner that silently compresses the week to
+          make it look achievable is worse than none. These are hours the plan
+          could not find a home for; they have not gone anywhere.
+
+          It is also where things come back to. An hour that passed without the
+          work being done stops counting as planned and the task reappears here
+          — nothing is deleted and nothing is quietly forgiven.
+        */}
+        <UnplannedRail
+          outstanding={outstanding}
+          skipped={skipped}
+          classById={classById}
+          missed={missed}
+        />
+
         <DragOverlay>
           {dragging && (
             <div className="card overlay">
-              {dragging.task_id
-                ? taskById.get(dragging.task_id)?.title ?? "Task"
-                : routineById.get(dragging.routine_id ?? "")?.title ?? "Routine"}
+              {dragging.kind === "task" ? dragging.task.title : dragging.title}
             </div>
           )}
         </DragOverlay>
       </DndContext>
 
-      {/*
-        The rail exists because a planner that silently compresses the week to
-        make it look achievable is worse than none. These are hours the plan
-        could not find a home for; they have not gone anywhere.
-      */}
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Unplanned</h2>
-          <span className="muted small">
-            {outstanding.length
-              ? `${formatMinutes(outstanding.reduce((s, u) => s + u.minutes, 0))} with no hour against it`
-              : "Everything on the board has time set aside."}
-          </span>
-        </div>
-
-        {outstanding.length > 0 && (
-          <ul className="list unplaced">
-            {outstanding
-              .sort(
-                (a, b) =>
-                  (Date.parse(a.task.due_at ?? "") || Infinity) -
-                  (Date.parse(b.task.due_at ?? "") || Infinity),
-              )
-              .map((u) => {
-                const cls = u.task.class_id ? classById.get(u.task.class_id) : undefined;
-                return (
-                  <li key={u.task_id} className={cls ? `hue-${cls.color}` : "hue-none"}>
-                    <span className="dot" />
-                    <span className="grow">{u.task.title}</span>
-                    <span className={u.guessed ? "muted small guessed" : "muted small"}>
-                      {formatMinutes(u.minutes)}
-                    </span>
-                    <span className="muted small">{formatDue(u.task.due_at)}</span>
-                  </li>
-                );
-              })}
-          </ul>
-        )}
-      </section>
-
+      <HoursPanel store={store} events={busy} />
       <RoutinesPanel store={store} />
     </div>
   );
@@ -367,135 +475,343 @@ export default function WeekPage({
 
 /* -------------------------------------------------------------------------- */
 
-function DayColumn({
-  index,
-  day,
+/**
+ * How long a task claims when it is dragged onto a day.
+ *
+ * One sitting, not the whole job. Dragging a six-hour essay onto Thursday
+ * should book Thursday evening, not all of Thursday — and the remainder stays
+ * in the rail, visible, where Replan can find hours for it.
+ */
+function sitting(minutes: number): number {
+  return Math.max(15, Math.min(minutes, MAX_SESSION_MINUTES));
+}
+
+/** `gap:3:2` / `card:3:2` / `tail:3` → which column, and which position in it. */
+function parseDrop(id: string): { day: number; index: number } | null {
+  const [kind, a, b] = id.split(":");
+  const day = Number(a);
+  if (!Number.isFinite(day)) return null;
+  if (kind === "tail") return { day, index: Number.MAX_SAFE_INTEGER };
+  if (kind === "gap" || kind === "card") return { day, index: Number(b) };
+  return null;
+}
+
+/** The item above the gap, skipping the block being dragged out of it. */
+function lastBefore(
+  list: PlanBlock[],
+  index: number,
+  held: string | null,
+): PlanBlock | null {
+  for (let i = Math.min(index, list.length) - 1; i >= 0; i--) {
+    if (list[i].id !== held) return list[i];
+  }
+  return null;
+}
+
+/**
+ * A place to drop something: between two cards, or at the end of a column.
+ *
+ * Nearly invisible until a drag is in flight, and then it opens into a real
+ * target. A permanent gutter between every card would cost a seven-column grid
+ * more vertical space than the cards themselves.
+ */
+function DropSlot({
+  id,
+  className = "",
   children,
 }: {
-  index: number;
+  id: string;
+  className?: string;
+  children?: React.ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return (
+    <li
+      ref={setNodeRef}
+      className={`drop-slot ${className}${isOver ? " over" : ""}`}
+    >
+      {children}
+    </li>
+  );
+}
+
+function DayColumn({
+  day,
+  windows,
+  children,
+}: {
   day: Date;
+  windows: StudyWindow[];
   children: React.ReactNode;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: `day-${index}` });
   const today = isSameDay(day, new Date());
+  // The hours are the rule this whole column obeys, so the column says them.
+  // Someone who has just dragged a block into a gap the planner will never use
+  // deserves to know why nothing ever joins it there.
+  const hours = useMemo(() => hoursLabel(day, windows), [day, windows]);
 
   return (
-    <section
-      ref={setNodeRef}
-      className={`column day${isOver ? " over" : ""}${today ? " today" : ""}`}
-    >
+    <section className={`column day${today ? " today" : ""}`}>
       <h2>
         {day.toLocaleDateString(undefined, { weekday: "short" })}
         <span className="count">{day.getDate()}</span>
       </h2>
+      <p className="muted small day-hours">{hours}</p>
       {children}
     </section>
   );
 }
 
-/**
- * One event from Google Calendar.
- *
- * Never draggable, never editable, never deletable. It is not this app's row:
- * it is read from Google on every open and rendered, and a control that
- * appeared to move a lecture would be lying about what it could do.
- */
-function EventCard({ event }: { event: CalendarEvent }) {
-  return (
-    <li className="card block event hue-none">
-      <div className="row block-time">
-        <span className="muted small grow">
-          {clockOf(event.starts_at)} – {clockOf(event.ends_at)}
-        </span>
-        <span className="tag">Calendar</span>
-      </div>
-      <span className="block-title">{event.title}</span>
-    </li>
+function hoursLabel(day: Date, windows: StudyWindow[]): string {
+  const mine = windows.filter(
+    (w) => w.active && (w.weekday === null || w.weekday === day.getDay()),
   );
+  if (!mine.length) return "8 am – 10 pm";
+  return [...mine]
+    .sort((a, b) => a.starts_minute - b.starts_minute)
+    .map((w) => `${clockOfMinutes(w.starts_minute)}–${clockOfMinutes(w.ends_minute)}`)
+    .join(", ");
 }
 
 /**
- * One block.
+ * One block: work, a routine, or a lecture.
  *
- * A routine block is not editable here — its time comes from the routine, and
+ * A routine is not editable here — its time comes from the routine, and
  * changing it for one Tuesday only would make the routine a lie everywhere
  * else. Edit the routine below instead.
+ *
+ * A lecture is. It is a mirror of Google's row, and moving or dropping it says
+ * something about your week rather than about the lecture: nothing here is
+ * ever written back to the calendar, so skipping a class does not email
+ * anybody.
  */
 function BlockCard({
   block,
+  slot,
+  gap,
   task,
   routine,
   cls,
   onRetime,
-  onDrop,
+  onClear,
   onOpenClass,
 }: {
   block: PlanBlock;
+  slot: string;
+  gap: string;
   task: Task | null;
   routine: Routine | null;
   cls: Map<string, Class>;
   onRetime: (hhmm: string) => void;
-  onDrop: () => void;
+  onClear: () => void;
   onOpenClass: (id: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const fixed = Boolean(routine);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: block.id,
-    disabled: Boolean(routine),
+    id: `block:${block.id}`,
+    disabled: fixed,
   });
+  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: slot });
 
+  const event = Boolean(block.google_event_id);
   const klass = task?.class_id ? cls.get(task.class_id) : undefined;
-  const hue = routine ? "hue-none" : klass ? `hue-${klass.color}` : "hue-none";
-  const title = task?.title ?? routine?.title ?? "Untitled";
-
+  const hue = routine || event ? "hue-none" : klass ? `hue-${klass.color}` : "hue-none";
+  const title = task?.title ?? block.title ?? routine?.title ?? "Untitled";
   const start = new Date(block.starts_at);
-  const hhmm = `${`${start.getHours()}`.padStart(2, "0")}:${`${start.getMinutes()}`.padStart(2, "0")}`;
+  const past = Date.parse(block.ends_at) <= Date.now();
 
+  return (
+    <>
+      <li
+        ref={(node) => {
+          setNodeRef(node);
+          setDropRef(node);
+        }}
+        className={`card block ${hue}${isDragging ? " dragging" : ""}${
+          routine ? " routine" : ""
+        }${event ? " event" : ""}${block.locked ? " locked" : ""}${
+          past ? " past" : ""
+        }${isOver ? " slot-over" : ""}`}
+      >
+        <div className="row block-time">
+          {/*
+            The time is the control.
+
+            There was a Move button beside it that opened a picker showing the
+            same number the card was already displaying — two things saying one
+            thing, and the editable one was the one that did not look editable.
+          */}
+          {fixed ? (
+            <span className="muted small grow">
+              {clockOf(block.starts_at)} – {clockOf(block.ends_at)}
+            </span>
+          ) : (
+            <TimePicker
+              value={hhmmOf(start.getHours() * 60 + start.getMinutes())}
+              compact
+              display={`${clockOf(block.starts_at)} – ${clockOf(block.ends_at)}`}
+              onChange={onRetime}
+            />
+          )}
+        </div>
+
+        {/* The drag handle is the title, not the whole card. The time beneath
+            it is a button now, and a card that dragged from everywhere would
+            swallow the click that opens it. */}
+        <span
+          className={`block-title${fixed ? "" : " grabbable"}`}
+          {...(fixed ? {} : listeners)}
+          {...(fixed ? {} : attributes)}
+        >
+          {title}
+        </span>
+
+        {routine ? (
+          <span className="muted small">Routine</span>
+        ) : (
+          <div className="row block-actions">
+            {event ? (
+              <span className="muted small">Calendar</span>
+            ) : klass ? (
+              <button className="link" onClick={() => onOpenClass(klass.id)}>
+                {klass.name}
+              </button>
+            ) : null}
+            <span className="grow" />
+            <button
+              className="link danger"
+              onClick={onClear}
+              title={
+                event ? "Not attending. Never written back to Google." : undefined
+              }
+            >
+              Remove
+            </button>
+          </div>
+        )}
+      </li>
+      <DropSlot id={gap} />
+    </>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+function UnplannedRail({
+  outstanding,
+  skipped,
+  classById,
+  missed,
+}: {
+  outstanding: {
+    task_id: string;
+    minutes: number;
+    guessed: boolean;
+    missed: boolean;
+    task: Task;
+  }[];
+  skipped: PlanBlock[];
+  classById: Map<string, Class>;
+  missed: number;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: "unplanned" });
+  const total = outstanding.reduce((s, u) => s + u.minutes, 0);
+  const empty = outstanding.length === 0 && skipped.length === 0;
+
+  return (
+    <section
+      ref={setNodeRef}
+      className={`panel unplanned-rail${isOver ? " over" : ""}`}
+    >
+      <div className="panel-head">
+        <h2>Unplanned</h2>
+        <span className="muted small">
+          {outstanding.length
+            ? `${formatMinutes(total)} with no hour against it`
+            : "Everything on the board has time set aside."}
+        </span>
+      </div>
+
+      {/* The honest sentence about work that did not happen. An hour that went
+          by without it stops counting, which is why the task is back here — it
+          was neither deleted nor quietly marked as handled. */}
+      {missed > 0 && (
+        <p className="muted small notice">
+          {missed === 1 ? "One thing" : `${missed} things`} had time set aside
+          that has since passed. Those hours are back here, and Replan will find
+          them new ones.
+        </p>
+      )}
+
+      {empty ? (
+        <p className="muted small">Drag anything off the grid and it lands here.</p>
+      ) : (
+        <ul className="list unplaced">
+          {outstanding.map((u) => {
+            const cls = u.task.class_id ? classById.get(u.task.class_id) : undefined;
+            return (
+              <RailItem
+                key={u.task_id}
+                id={`task:${u.task_id}`}
+                hue={cls ? `hue-${cls.color}` : "hue-none"}
+                title={u.task.title}
+              >
+                {u.missed && <span className="tag">Missed</span>}
+                <span className={u.guessed ? "muted small guessed" : "muted small"}>
+                  {formatMinutes(u.minutes)}
+                </span>
+                <span className="muted small">{formatDue(u.task.due_at)}</span>
+              </RailItem>
+            );
+          })}
+
+          {/* Lectures you dropped. Kept rather than deleted, because the row
+              mirrors Google and a delete would be undone on the next refresh —
+              and because "actually, I will go" is a normal Tuesday. */}
+          {skipped.map((b) => (
+            <RailItem
+              key={b.id}
+              id={`block:${b.id}`}
+              hue="hue-none"
+              title={b.title ?? "Calendar"}
+            >
+              <span className="tag">Skipping</span>
+              <span className="muted small">
+                {new Date(b.starts_at).toLocaleDateString(undefined, {
+                  weekday: "short",
+                })}{" "}
+                {clockOf(b.starts_at)}
+              </span>
+            </RailItem>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function RailItem({
+  id,
+  hue,
+  title,
+  children,
+}: {
+  id: string;
+  hue: string;
+  title: string;
+  children: React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id });
   return (
     <li
       ref={setNodeRef}
-      {...(routine ? {} : listeners)}
-      {...(routine ? {} : attributes)}
-      className={`card block ${hue}${isDragging ? " dragging" : ""}${
-        routine ? " routine" : ""
-      }${block.locked ? " locked" : ""}`}
+      className={`${hue} rail-item${isDragging ? " dragging" : ""}`}
+      {...listeners}
+      {...attributes}
     >
-      <div className="row block-time">
-        <span className="muted small grow">
-          {clockOf(block.starts_at)} – {clockOf(block.ends_at)}
-        </span>
-        {/* Said, not implied. A locked block is the one thing on this screen
-            that Replan will not touch, and that is worth a word. */}
-        {block.locked && <span className="tag">Kept</span>}
-      </div>
-
-      <span className="block-title">{title}</span>
-
-      {routine ? (
-        <span className="muted small">Routine</span>
-      ) : (
-        <div className="row block-actions">
-          <button className="link" onClick={() => setOpen(!open)} aria-expanded={open}>
-            {open ? "Close" : "Move"}
-          </button>
-          {klass && (
-            <button className="link" onClick={() => onOpenClass(klass.id)}>
-              {klass.name}
-            </button>
-          )}
-          <span className="grow" />
-          <button className="link danger" onClick={onDrop}>
-            Remove
-          </button>
-        </div>
-      )}
-
-      {open && !routine && (
-        <div className="block-retime">
-          <span className="label">Start at</span>
-          <TimePicker value={hhmm} onChange={onRetime} />
-        </div>
-      )}
+      <span className="dot" />
+      <span className="grow ellipsis">{title}</span>
+      {children}
     </li>
   );
 }

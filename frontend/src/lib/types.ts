@@ -141,21 +141,59 @@ export type Routine = {
 };
 
 /**
- * One hour of the week, spoken for. Exactly one of `task_id` and `routine_id`
- * is set.
+ * One hour of the week, spoken for. Exactly one of `task_id`, `routine_id` and
+ * `google_event_id` is set — work, a standing commitment, or a lecture.
  *
  * `locked` means a person put this block here. Regeneration rewrites unlocked
  * blocks and plans around locked ones, which is the whole reason a manual
  * edit is not simply overwritten by the next press of the button.
+ *
+ * Event blocks are a *mirror* of Google, not a second source of truth: their
+ * times are refreshed from the calendar on every open (see `db.syncCalendar`)
+ * and nothing is ever written back. What the mirror adds is the two facts
+ * Google has no opinion about — `dismissed`, meaning you are not going, and a
+ * `locked` time you moved on your own board.
  */
 export type PlanBlock = {
   id: string;
   user_id: string;
   task_id: string | null;
   routine_id: string | null;
+  google_event_id: string | null;
+  /** Set on event blocks only. A task block reads its title off the task. */
+  title: string | null;
   starts_at: string;
   ends_at: string;
   locked: boolean;
+  /**
+   * Dropped from the board but kept on the row. Deleting instead would be
+   * undone by the next refresh from Google — which reads as the app ignoring
+   * you. A dismissed event occupies no time and waits in the Unplanned rail.
+   */
+  dismissed: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * An hour range you are willing to work in, on one weekday or on all of them.
+ *
+ * These replace the flat 8am–10pm the planner used to assume. A day is not one
+ * long window — it is a morning that ends when the lectures do, an afternoon,
+ * and a late block, with gaps between them that are dinner and not study time.
+ * Planning into those gaps is how a plan stops describing anybody's day.
+ *
+ * Minutes past local midnight, so the planner never parses anything, and so a
+ * 9pm block stays at 9pm when the clocks change. `ends_minute` may be 1440:
+ * "nine until midnight" is a real answer.
+ */
+export type StudyWindow = {
+  id: string;
+  user_id: string;
+  weekday: number | null;
+  starts_minute: number;
+  ends_minute: number;
+  active: boolean;
   created_at: string;
   updated_at: string;
 };

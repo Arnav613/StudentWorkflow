@@ -15,11 +15,23 @@
  * Hence `unplaced`: what does not fit comes back and gets shown.
  */
 
-import type { PlanBlock, Routine, Task } from "./types";
+import type { PlanBlock, Routine, StudyWindow, Task } from "./types";
 
-/** Waking hours the planner is allowed to fill. Outside these it plans nothing. */
+/**
+ * The hours assumed when a person has defined no study windows of their own.
+ *
+ * A fallback, not a default anybody chose — which is exactly what the old
+ * hardcoded pair was, except that one could not be overridden. The moment a
+ * single window exists, this is never consulted again.
+ */
 export const DAY_START_HOUR = 8;
 export const DAY_END_HOUR = 22;
+
+/** Minutes past midnight, for a day with nothing said about it. */
+export const FALLBACK_WINDOW = {
+  starts_minute: DAY_START_HOUR * 60,
+  ends_minute: DAY_END_HOUR * 60,
+};
 
 /**
  * The longest single sitting, and the break that follows one.
@@ -83,6 +95,12 @@ export type PlanInput = {
   busy: BusyInterval[];
   /** Blocks a person placed by hand. Immovable, and planned around. */
   locked: PlanBlock[];
+  /**
+   * The hours work may be placed in. Empty means "nothing has been said", and
+   * the fallback window stands in — never "no hours", which would plan an
+   * empty week and look like the button was broken.
+   */
+  windows?: StudyWindow[];
   /** The instant the plan starts. Nothing is ever scheduled before it. */
   from: Date;
   days?: number;
@@ -95,7 +113,7 @@ export type Plan = {
   unplaced: Unplaced[];
 };
 
-type Interval = { start: number; end: number };
+export type Interval = { start: number; end: number };
 
 /* ---------------------------------------------------------------------------
    Estimates
@@ -205,6 +223,98 @@ function carve(window: Interval, occupied: Interval[]): Interval[] {
 }
 
 /* ---------------------------------------------------------------------------
+   Study windows — the hours a person is willing to work in
+   ------------------------------------------------------------------------ */
+
+/**
+ * The windows that apply to one day, as absolute instants, merged and sorted.
+ *
+ * Merged rather than kept apart because two windows that touch or overlap are
+ * one stretch of available time, and leaving them separate would make the
+ * planner refuse to run a session across the seam — 11:30 to 12:00 and 12:00
+ * to 14:00 would cap a sitting at thirty minutes for no reason a person could
+ * see.
+ *
+ * A day-specific window does not *replace* the every-day ones, it adds to
+ * them. Overriding would need a rule for what "override" means when they only
+ * partly overlap, and every such rule surprises somebody; adding is the one
+ * behaviour that is obvious from the list on screen.
+ */
+export function dayWindows(day: Date, windows: StudyWindow[]): Interval[] {
+  const mine = windows.filter(
+    (w) => w.active && (w.weekday === null || w.weekday === day.getDay()),
+  );
+  const ranges = (mine.length ? mine : [FALLBACK_WINDOW])
+    .map((w) => ({ start: at(day, w.starts_minute), end: at(day, w.ends_minute) }))
+    .sort((a, b) => a.start - b.start);
+
+  const out: Interval[] = [];
+  for (const r of ranges) {
+    const last = out[out.length - 1];
+    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+    else out.push({ ...r });
+  }
+  return out;
+}
+
+/** The outer edges of a day's study time — used to bound a hand-dropped block. */
+export function dayBounds(day: Date, windows: StudyWindow[]): Interval {
+  const w = dayWindows(day, windows);
+  return { start: w[0].start, end: w[w.length - 1].end };
+}
+
+/**
+ * Where a block dropped between two neighbours should actually start.
+ *
+ * The rule the gesture implies, and the one it did not use to follow: a block
+ * dropped into a gap starts *at that gap*, keeping its own length. Dragging an
+ * 8am session to the end of Thursday used to keep 8am and snap back to the top
+ * of the column — the app quietly overruling the only instruction the drag
+ * carried.
+ *
+ * It takes only as long as it already took. A two-hour gap does not turn a
+ * forty-minute reading into a two-hour reading; the rest of the gap stays free
+ * for the planner.
+ *
+ * Overlap is permitted when the gap is genuinely too small. Refusing the drop
+ * would be the app arguing with a deliberate act, and a double-booked hour you
+ * created on purpose is information — one you were prevented from expressing
+ * is not.
+ */
+export function timeForSlot({
+  day,
+  after,
+  minutes,
+  windows,
+}: {
+  day: Date;
+  /**
+   * The item the block was dropped below, if any. The gap it opens is the
+   * whole of the answer — the item *above* which the block was dropped is
+   * deliberately not consulted, because the block keeps its own length either
+   * way and shortening it to fit would silently rewrite an estimate, which is
+   * the one number on a card the app is not allowed to invent.
+   */
+  after: { ends_at: string } | null;
+  minutes: number;
+  windows: StudyWindow[];
+}): Date {
+  const bounds = dayBounds(day, windows);
+  // The top of the gap. A block dropped into a two-hour hole starts at the
+  // beginning of it rather than floating in the middle, so the leftover time
+  // stays contiguous and the planner can still use it.
+  const lower = after ? Date.parse(after.ends_at) : bounds.start;
+
+  // Pulled back only to keep the block inside the day it was dropped on. A gap
+  // that is merely tight is left overlapping: refusing a deliberate drop would
+  // be the app arguing with you, and a double-booked hour you created on
+  // purpose is information.
+  const dayEnd = at(day, 24 * 60);
+  const start = Math.min(lower, dayEnd - minutes * MINUTE);
+  return new Date(Math.max(start, at(day, 0)));
+}
+
+/* ---------------------------------------------------------------------------
    The planner
    ------------------------------------------------------------------------ */
 
@@ -228,13 +338,14 @@ export function planWeek({
   routines,
   busy,
   locked,
+  windows: studyWindows = [],
   from,
   days = 7,
   medians,
 }: PlanInput): Plan {
   const horizon = planDays(from, days);
   const floor = from.getTime();
-  const ceiling = at(addDays(horizon[0], days - 1), DAY_END_HOUR * 60);
+  const ceiling = at(addDays(horizon[0], days - 1), 24 * 60);
 
   const blocks: PlannedBlock[] = [];
   const occupied: Interval[] = [];
@@ -295,13 +406,22 @@ export function planWeek({
 
   occupied.sort((a, b) => a.start - b.start);
 
+  /*
+   * Free time is now what is left of the *chosen* hours, rather than what is
+   * left of a day someone else picked. The carve is unchanged and is where
+   * "study blocks form around your classes" actually happens: a 9am lecture
+   * inside a 8–12 window leaves 8–9 and 10–12, with no special case for
+   * lectures anywhere in this function.
+   */
   const windows: Interval[] = [];
   for (const day of horizon) {
-    const open = Math.max(at(day, DAY_START_HOUR * 60), floor);
-    const close = at(day, DAY_END_HOUR * 60);
-    if (close <= open) continue;
-    windows.push(...carve({ start: open, end: close }, occupied));
+    for (const w of dayWindows(day, studyWindows)) {
+      const open = Math.max(w.start, floor);
+      if (w.end <= open) continue;
+      windows.push(...carve({ start: open, end: w.end }, occupied));
+    }
   }
+  windows.sort((a, b) => a.start - b.start);
 
   // 3. Tasks, earliest deadline first. Undated work sorts last — "sometime"
   // must never displace "Thursday" — and among equals the shorter job goes
@@ -408,10 +528,29 @@ export function unscheduled(
   tasks: PlannableTask[],
   blocks: { task_id: string | null; starts_at: string; ends_at: string }[],
   medians?: Map<string, number>,
-): { task_id: string; minutes: number; guessed: boolean }[] {
+  now: number = Date.now(),
+): { task_id: string; minutes: number; guessed: boolean; missed: boolean }[] {
   const planned = new Map<string, number>();
+  const lapsed = new Set<string>();
+
   for (const b of blocks) {
     if (!b.task_id) continue;
+    /*
+     * An hour that has already gone by, on a task that is still not done, is
+     * not planned time — it is the hour you did not use.
+     *
+     * This is the whole answer to "what happens to Tuesday's work if I skip
+     * it". Nothing deletes it and nothing silently forgives it: the moment a
+     * block lapses its minutes stop counting as accounted for, the task
+     * reappears in the Unplanned rail carrying exactly what it still needs,
+     * and the next Replan finds it a new hour. The alternative — counting
+     * time you demonstrably did not spend — is a planner that quietly reports
+     * a week as handled while the work piles up behind it.
+     */
+    if (Date.parse(b.ends_at) <= now) {
+      lapsed.add(b.task_id);
+      continue;
+    }
     planned.set(b.task_id, (planned.get(b.task_id) ?? 0) + blockMinutes(b));
   }
 
@@ -423,6 +562,7 @@ export function unscheduled(
         task_id: t.id,
         minutes: Math.round(minutes - (planned.get(t.id) ?? 0)),
         guessed,
+        missed: lapsed.has(t.id),
       };
     })
     // A minute or two of rounding slack is not an unplanned task. Anything
@@ -453,11 +593,38 @@ export function blockMinutes(block: { starts_at: string; ends_at: string }): num
   return (Date.parse(block.ends_at) - Date.parse(block.starts_at)) / MINUTE;
 }
 
-/** The clock on a block. Seconds never matter here and would only add noise. */
-export function clockOf(iso: string): string {
+/**
+ * The clock on a block: `9 am`, `1:30 pm`.
+ *
+ * Twelve-hour, stated rather than inherited from the locale. Every other time
+ * on the grid is one of these, and a browser set to a 24-hour locale used to
+ * render half the app in one convention while the pickers spoke the other —
+ * the same instant reading two different ways on one screen.
+ *
+ * `:00` is dropped and seconds never appear. A column seven wide has no room
+ * to say "9:00 am" when it means nine.
+ */
+export function clockOf(iso: string | Date): string {
   return new Date(iso)
-    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-    .replace(":00", "");
+    .toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+    .replace(":00", "")
+    .toLowerCase();
+}
+
+/** `510` → `8:30 am`. The same clock, for a minutes-past-midnight value. */
+export function clockOfMinutes(minutes: number): string {
+  if (minutes >= 24 * 60) return "midnight";
+  return clockOf(new Date(2000, 0, 1, Math.floor(minutes / 60), minutes % 60));
+}
+
+/** Minutes past midnight → the `"HH:MM"` a TimePicker wants back. */
+export function hhmmOf(minutes: number): string {
+  const m = Math.min(minutes, 23 * 60 + 59);
+  return `${`${Math.floor(m / 60)}`.padStart(2, "0")}:${`${m % 60}`.padStart(2, "0")}`;
 }
 
 /** Group blocks into the day columns they belong to. */

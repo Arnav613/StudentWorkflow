@@ -21,6 +21,7 @@ import type {
   HealthTask,
   PlanBlock,
   Routine,
+  StudyWindow,
   Task,
   TaskStatus,
 } from "./types";
@@ -452,6 +453,10 @@ export async function replacePlan(
     .from("plan_blocks")
     .delete()
     .eq("locked", false)
+    // Event blocks are unlocked but are not the planner's to rewrite: they
+    // mirror Google, and deleting one here would resurrect it — with its
+    // dismissal lost — on the very next refresh.
+    .is("google_event_id", null)
     .gte("ends_at", from.toISOString());
   if (delError) throw delError;
 
@@ -504,4 +509,209 @@ export async function unlockBlock(id: string): Promise<PlanBlock> {
 export async function deleteBlock(id: string): Promise<void> {
   const { error } = await supabase.from("plan_blocks").delete().eq("id", id);
   if (error) throw error;
+}
+
+/**
+ * Place a block by hand — a task dragged out of the Unplanned rail onto a day.
+ *
+ * Locked on arrival, like every other manual placement. Someone chose this
+ * hour, and the next Replan has to work around it rather than treat it as one
+ * of its own suggestions to reshuffle.
+ */
+export async function createTaskBlock(input: {
+  user_id: string;
+  task_id: string;
+  starts_at: string;
+  ends_at: string;
+}): Promise<PlanBlock> {
+  return unwrap(
+    await supabase
+      .from("plan_blocks")
+      .insert({ ...input, locked: true })
+      .select()
+      .single(),
+  );
+}
+
+/**
+ * Take a lecture off the board, or put it back.
+ *
+ * A flag rather than a delete, because the row is a mirror: deleting it would
+ * last exactly until the next refresh from Google, which reads as the app
+ * ignoring you. Dismissed is also never written back to the calendar — "I am
+ * not going to this" is a decision about your week, not an announcement to
+ * everyone else on the invite.
+ */
+export async function setDismissed(
+  id: string,
+  dismissed: boolean,
+): Promise<PlanBlock> {
+  return unwrap(
+    await supabase
+      .from("plan_blocks")
+      .update({ dismissed })
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The calendar mirror
+// ---------------------------------------------------------------------------
+
+export type MirrorEvent = {
+  id: string;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+};
+
+/**
+ * Bring the local copy of the calendar in line with Google.
+ *
+ * Events used to be fetched on every open and drawn straight onto the grid,
+ * owned by nobody. That cost a visible pause on a screen whose whole job is to
+ * be glanced at, and it made a lecture the one thing on the board you could
+ * not move — the grid rendered rows the app had no right to touch.
+ *
+ * Now they are rows here, rendered instantly from the same query as everything
+ * else, and this runs *behind* that render. Google stays the source of truth
+ * for when a lecture is; what it does not get an opinion on is the two things
+ * this app added on top:
+ *
+ *   - a `locked` block keeps the time you dragged it to. You moved it on your
+ *     board on purpose, and a refresh that dragged it back would be the app
+ *     undoing your work every thirty seconds.
+ *   - a `dismissed` block stays dismissed. You are still not going.
+ *
+ * Nothing here writes to Google. A cancelled lecture disappears because it
+ * stops coming back from the fetch, not because anything told Google so.
+ */
+export async function syncCalendar(
+  userId: string,
+  events: MirrorEvent[],
+  from: Date,
+  to: Date,
+): Promise<boolean> {
+  const existing: PlanBlock[] = unwrap(
+    await supabase
+      .from("plan_blocks")
+      .select("*")
+      .not("google_event_id", "is", null)
+      .gte("ends_at", from.toISOString())
+      .lte("starts_at", to.toISOString()),
+  );
+
+  const byEvent = new Map(existing.map((b) => [b.google_event_id as string, b]));
+  const seen = new Set(events.map((e) => e.id));
+  let changed = false;
+
+  const fresh = events
+    .filter((e) => !byEvent.has(e.id))
+    .map((e) => ({
+      user_id: userId,
+      google_event_id: e.id,
+      title: e.title,
+      starts_at: e.starts_at,
+      ends_at: e.ends_at,
+      locked: false,
+      dismissed: false,
+    }));
+
+  if (fresh.length) {
+    const { error } = await supabase.from("plan_blocks").insert(fresh);
+    // A duplicate here is two tabs syncing the same lecture at once, which the
+    // unique index correctly refuses. It is not worth surfacing: the row it
+    // collided with is the row we wanted.
+    if (error && !`${error.message}`.includes("duplicate")) throw error;
+    changed = true;
+  }
+
+  for (const event of events) {
+    const block = byEvent.get(event.id);
+    if (!block) continue;
+    const patch: Record<string, string> = {};
+    if (block.title !== event.title) patch.title = event.title;
+    // A moved lecture is only followed if you have not moved it yourself.
+    if (!block.locked) {
+      if (block.starts_at !== event.starts_at) patch.starts_at = event.starts_at;
+      if (block.ends_at !== event.ends_at) patch.ends_at = event.ends_at;
+    }
+    if (!Object.keys(patch).length) continue;
+    const { error } = await supabase
+      .from("plan_blocks")
+      .update(patch)
+      .eq("id", block.id);
+    if (error) throw error;
+    changed = true;
+  }
+
+  // Gone from Google means cancelled. Dropping the local row is right even for
+  // a dismissed one — you cannot skip a lecture that is not happening.
+  const stale = existing.filter((b) => !seen.has(b.google_event_id as string));
+  if (stale.length) {
+    const { error } = await supabase
+      .from("plan_blocks")
+      .delete()
+      .in("id", stale.map((b) => b.id));
+    if (error) throw error;
+    changed = true;
+  }
+
+  return changed;
+}
+
+// ---------------------------------------------------------------------------
+// Study windows — the hours you are willing to work in
+// ---------------------------------------------------------------------------
+
+export async function listStudyWindows(): Promise<StudyWindow[]> {
+  return unwrap(
+    await supabase
+      .from("study_windows")
+      .select("*")
+      .order("weekday", { nullsFirst: true })
+      .order("starts_minute"),
+  );
+}
+
+export async function createStudyWindow(input: {
+  user_id: string;
+  weekday: number | null;
+  starts_minute: number;
+  ends_minute: number;
+}): Promise<StudyWindow> {
+  return unwrap(
+    await supabase.from("study_windows").insert(input).select().single(),
+  );
+}
+
+export async function updateStudyWindow(
+  id: string,
+  patch: Partial<
+    Pick<StudyWindow, "weekday" | "starts_minute" | "ends_minute" | "active">
+  >,
+): Promise<StudyWindow> {
+  return unwrap(
+    await supabase.from("study_windows").update(patch).eq("id", id).select().single(),
+  );
+}
+
+export async function deleteStudyWindow(id: string): Promise<void> {
+  const { error } = await supabase.from("study_windows").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/** Used when seeding a whole weekday at once from the calendar. */
+export async function createStudyWindows(
+  rows: {
+    user_id: string;
+    weekday: number | null;
+    starts_minute: number;
+    ends_minute: number;
+  }[],
+): Promise<StudyWindow[]> {
+  if (!rows.length) return [];
+  return unwrap(await supabase.from("study_windows").insert(rows).select());
 }
