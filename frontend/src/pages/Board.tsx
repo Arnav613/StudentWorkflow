@@ -47,9 +47,15 @@ export type View =
   | { kind: "week" }
   | { kind: "class"; id: string; tab: ClassTab };
 
-export type ClassTab = "tasks" | "notes" | "docs";
+export type ClassTab = "tasks" | "notes" | "docs" | "timetable" | "grades";
 
-const CLASS_TABS: ClassTab[] = ["tasks", "notes", "docs"];
+const CLASS_TABS: ClassTab[] = [
+  "tasks",
+  "notes",
+  "docs",
+  "timetable",
+  "grades",
+];
 
 function viewToHash(v: View): string {
   if (v.kind === "classes") return "#/classes";
@@ -128,6 +134,8 @@ export default function Board({
     tasks: "Tasks",
     notes: "Notes",
     docs: "Docs",
+    timetable: "Timetable",
+    grades: "Grades",
   };
   useTitle(
     view.kind === "class"

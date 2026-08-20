@@ -139,6 +139,14 @@ export const isReconnectError = (e: unknown) =>
 
 export type CalendarEvent = {
   id: string;
+  /**
+   * The recurring series this occurrence belongs to, or its own id.
+   *
+   * Empty from a backend older than phase 10, which callers fall back on the
+   * event id for — one lecture linked individually is a worse answer than a
+   * whole series, and a much better one than a crash.
+   */
+  series_id?: string;
   /** "Busy" when the event carries no summary we are allowed to see. */
   title: string;
   starts_at: string;
@@ -178,4 +186,49 @@ export const summariseLink = (link_id: string) =>
   api<LinkSummary>("/ai/summarise-link", {
     method: "POST",
     body: JSON.stringify({ link_id }),
+  });
+
+// ---------------------------------------------------------------------------
+// Reading an uploaded document — phase 10
+// ---------------------------------------------------------------------------
+
+export type ExtractedSession = {
+  /** ISO, "YYYY-MM-DD". Every row the model could not date is already gone. */
+  date: string;
+  topic: string;
+  details: string;
+  is_assessment: boolean;
+};
+
+export type ExtractedCriterion = {
+  label: string;
+  weight: number;
+  max_score: number;
+};
+
+/**
+ * What a document seems to say — and nothing written down yet.
+ *
+ * This response is the whole of the model's involvement. It lands in React
+ * state, renders as an editable table, and a person presses Confirm; the write
+ * that follows is an ordinary browser-to-Supabase insert. Nothing here is
+ * persisted server-side, so closing the tab discards it — which is right, and
+ * cheap: the file is still uploaded and Extract is one press.
+ *
+ * `note` carries the honest empty case. A photograph of the wrong page finds
+ * no rows, and that is a sentence to read rather than an error to be alarmed
+ * by.
+ */
+export type Extraction = {
+  kind: "timetable" | "rubric";
+  title: string;
+  sessions: ExtractedSession[];
+  criteria: ExtractedCriterion[];
+  note: string | null;
+};
+
+export const extractDocument = (document_id: string) =>
+  api<Extraction>("/ai/extract", {
+    method: "POST",
+    body: JSON.stringify({ document_id }),
   });

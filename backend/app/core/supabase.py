@@ -105,3 +105,35 @@ async def upsert_on(table: str, rows: list[dict] | dict, conflict: str) -> list[
 def eq(value: str) -> str:
     """PostgREST's filter syntax: `?user_id=eq.<uuid>`."""
     return f"eq.{value}"
+
+
+async def download_object(bucket: str, path: str) -> bytes:
+    """One object out of Storage, with the service role.
+
+    Storage is a different API from PostgREST and needs its own base URL, so
+    it does not go through `_request`. What it shares is the obligation that
+    comes with the service role: this bypasses the bucket policies exactly the
+    way the rest of this file bypasses RLS, so the caller must have already
+    established that the path belongs to the user asking for it. Every caller
+    reaches a path by reading a row it filtered on `user_id` — never from a
+    string a browser sent.
+    """
+    settings = get_settings()
+    if not settings.supabase_url or not settings.supabase_service_role_key:
+        raise DbError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not configured")
+
+    url = f"{settings.supabase_url.rstrip('/')}/storage/v1/object/{bucket}/{path}"
+    async with httpx.AsyncClient(
+        headers={
+            "apikey": settings.supabase_service_role_key,
+            "Authorization": f"Bearer {settings.supabase_service_role_key}",
+        },
+        timeout=60.0,
+    ) as http:
+        res = await http.get(url)
+
+    if res.status_code == 404:
+        raise DbError(f"No such object: {bucket}/{path}")
+    if res.status_code >= 400:
+        raise DbError(f"storage {bucket}/{path} -> {res.status_code}: {res.text[:200]}")
+    return res.content

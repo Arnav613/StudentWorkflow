@@ -17,7 +17,11 @@ import { supabase } from "./supabase";
 import type {
   Class,
   ChecklistItem,
+  ClassDocument,
+  ClassEventLink,
   ClassLink,
+  ClassSession,
+  DocumentKind,
   DeadlinePayload,
   HealthTask,
   Proposal,
@@ -25,6 +29,8 @@ import type {
   Routine,
   RoutineOverride,
   RoutineSkip,
+  Rubric,
+  RubricCriterion,
   Task,
   TaskStatus,
 } from "./types";
@@ -772,6 +778,12 @@ export async function setDismissed(
 
 export type MirrorEvent = {
   id: string;
+  /**
+   * The recurring event this occurrence belongs to, or its own id for a
+   * one-off. Mirrored onto the block so the grid can look up which class a
+   * lecture is without a second round trip — see `class_event_links`.
+   */
+  series_id?: string;
   title: string;
   starts_at: string;
   ends_at: string;
@@ -837,6 +849,7 @@ export async function syncCalendar(
     .map((e) => ({
       user_id: userId,
       google_event_id: e.id,
+      google_series_id: e.series_id ?? e.id,
       title: e.title,
       starts_at: e.starts_at,
       ends_at: e.ends_at,
@@ -867,6 +880,12 @@ export async function syncCalendar(
     if (!block) continue;
     const patch: Record<string, string> = {};
     if (block.title !== event.title) patch.title = event.title;
+    // Backfill. Every block mirrored before migration 0011 has a null series
+    // id, and without this the class link would only ever work for lectures
+    // first seen after the upgrade — the ones already on the grid would stay
+    // permanently unlinkable with nothing to explain it.
+    const series = event.series_id ?? event.id;
+    if (block.google_series_id !== series) patch.google_series_id = series;
     // A moved lecture is only followed if you have not moved it yourself.
     if (!block.locked) {
       if (block.starts_at !== event.starts_at) patch.starts_at = event.starts_at;
@@ -943,6 +962,7 @@ export async function resyncCalendar(
     incoming.map((e) => ({
       user_id: userId,
       google_event_id: e.id,
+      google_series_id: e.series_id ?? e.id,
       title: e.title,
       starts_at: e.starts_at,
       ends_at: e.ends_at,
@@ -1071,4 +1091,354 @@ export async function resyncRoutine(
       .insert(fresh.map((b) => ({ ...b, user_id: userId })))
       .select(),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Uploaded documents — phase 10. See migration 0011.
+// ---------------------------------------------------------------------------
+//
+// The file goes to Storage from the browser, under the bucket's own policies,
+// and the row is written from the browser too. The server's only part in this
+// is reading the bytes back and asking Gemini what they say — it never writes
+// a session, a criterion or a mark.
+
+const DOCS_BUCKET = "class-docs";
+
+export async function listClassDocuments(
+  classId: string,
+  kind: DocumentKind,
+): Promise<ClassDocument[]> {
+  return unwrap(
+    await supabase
+      .from("class_documents")
+      .select("*")
+      .eq("class_id", classId)
+      .eq("kind", kind)
+      .order("created_at", { ascending: false }),
+  );
+}
+
+function extensionOf(file: File): string {
+  const fromName = file.name.includes(".") ? file.name.split(".").pop() : "";
+  if (fromName && /^[a-z0-9]{1,5}$/i.test(fromName)) return fromName.toLowerCase();
+  const fromType = file.type.split("/")[1];
+  return fromType === "jpeg" ? "jpg" : fromType || "bin";
+}
+
+/**
+ * Upload a handout and record it, in that order.
+ *
+ * The object first, the row second, because the failure that matters is a row
+ * pointing at a file that is not there — a tab listing a document which will
+ * not open, forever. The other way round leaves an orphaned object in a
+ * private bucket, which costs a few hundred kilobytes of a free gigabyte and
+ * is invisible.
+ *
+ * Path is `<user_id>/<class_id>/<random>.<ext>`: the first segment is the
+ * whole storage policy, the same rule note images have followed since 0003.
+ */
+export async function uploadClassDocument(input: {
+  user_id: string;
+  class_id: string;
+  kind: DocumentKind;
+  file: File;
+}): Promise<ClassDocument> {
+  const { user_id, class_id, kind, file } = input;
+  const path = `${user_id}/${class_id}/${crypto.randomUUID()}.${extensionOf(file)}`;
+
+  const { error } = await supabase.storage
+    .from(DOCS_BUCKET)
+    .upload(path, file, { contentType: file.type || undefined });
+  if (error) throw error;
+
+  return unwrap(
+    await supabase
+      .from("class_documents")
+      .insert({
+        class_id,
+        kind,
+        title: file.name.slice(0, 200),
+        storage_path: path,
+        mime_type: file.type || "application/octet-stream",
+      })
+      .select()
+      .single(),
+  );
+}
+
+/**
+ * A short-lived URL for one stored document, signed on demand.
+ *
+ * Not cached, unlike note images: this is one click on a row somebody chose
+ * to open, not something re-requested on every render of an editor.
+ */
+export async function signClassDocument(path: string): Promise<string> {
+  const { data, error } = await supabase.storage
+    .from(DOCS_BUCKET)
+    .createSignedUrl(path, 3600);
+  if (error || !data) throw error ?? new Error("Could not open that document");
+  return data.signedUrl;
+}
+
+/**
+ * Delete a document; leave behind what was read out of it.
+ *
+ * The foreign keys are `on delete set null` for exactly this reason. By the
+ * time you throw away a blurry photo of a handout you have usually corrected
+ * the rows it produced by hand, and deleting the schedule along with the scan
+ * would destroy the corrections rather than the scan.
+ *
+ * The object is best effort, like note images: a row that refuses to delete
+ * because Storage was briefly unhappy costs more than an orphaned file does.
+ */
+export async function deleteClassDocument(
+  doc: Pick<ClassDocument, "id" | "storage_path">,
+): Promise<void> {
+  try {
+    await supabase.storage.from(DOCS_BUCKET).remove([doc.storage_path]);
+  } catch {
+    // Best effort, by design. See above.
+  }
+  const { error } = await supabase.from("class_documents").delete().eq("id", doc.id);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// The schedule
+// ---------------------------------------------------------------------------
+
+export async function listClassSessions(classId: string): Promise<ClassSession[]> {
+  return unwrap(
+    await supabase
+      .from("class_sessions")
+      .select("*")
+      .eq("class_id", classId)
+      .order("on_date"),
+  );
+}
+
+/**
+ * Every session across every class, for the week grid.
+ *
+ * Bounded by date rather than fetched whole: a term is a few hundred rows per
+ * class and the grid needs a fortnight of them. Two ISO dates, because the
+ * column is a `date` — comparing it against an instant would drop the far
+ * edge on the day the horizon lands.
+ */
+export async function listSessionsBetween(
+  fromDate: string,
+  toDate: string,
+): Promise<ClassSession[]> {
+  return unwrap(
+    await supabase
+      .from("class_sessions")
+      .select("*")
+      .gte("on_date", fromDate)
+      .lte("on_date", toDate)
+      .order("on_date"),
+  );
+}
+
+/**
+ * Write the confirmed rows of one extraction.
+ *
+ * Replaces whatever that document produced before, and only that: sessions
+ * from a different document, and any you typed in by hand, are untouched.
+ * Re-extracting a corrected scan should replace its own output rather than
+ * doubling the term.
+ */
+export async function replaceSessionsForDocument(input: {
+  class_id: string;
+  document_id: string;
+  rows: Array<{
+    on_date: string;
+    topic: string;
+    details: string | null;
+    is_assessment: boolean;
+  }>;
+}): Promise<ClassSession[]> {
+  const { error } = await supabase
+    .from("class_sessions")
+    .delete()
+    .eq("document_id", input.document_id);
+  if (error) throw error;
+
+  if (!input.rows.length) return [];
+
+  return unwrap(
+    await supabase
+      .from("class_sessions")
+      .insert(
+        input.rows.map((r) => ({
+          class_id: input.class_id,
+          document_id: input.document_id,
+          ...r,
+        })),
+      )
+      .select(),
+  );
+}
+
+export async function updateClassSession(
+  id: string,
+  patch: Partial<
+    Pick<ClassSession, "on_date" | "topic" | "details" | "is_assessment">
+  >,
+): Promise<ClassSession> {
+  return unwrap(
+    await supabase
+      .from("class_sessions")
+      .update(patch)
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
+export async function deleteClassSession(id: string): Promise<void> {
+  const { error } = await supabase.from("class_sessions").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Rubrics and marks
+// ---------------------------------------------------------------------------
+
+export async function listRubrics(classId: string): Promise<Rubric[]> {
+  return unwrap(
+    await supabase
+      .from("rubrics")
+      .select("*")
+      .eq("class_id", classId)
+      .order("created_at"),
+  );
+}
+
+export async function listCriteria(rubricId: string): Promise<RubricCriterion[]> {
+  return unwrap(
+    await supabase
+      .from("rubric_criteria")
+      .select("*")
+      .eq("rubric_id", rubricId)
+      .order("position"),
+  );
+}
+
+/**
+ * Create a rubric and its components from a confirmed extraction.
+ *
+ * No score is written and none is accepted here. A rubric states what a
+ * course is worth; what you got is typed in later, one field at a time, by
+ * the person who was handed the mark.
+ */
+export async function createRubric(input: {
+  class_id: string;
+  document_id: string | null;
+  title: string;
+  criteria: Array<{ label: string; weight: number; max_score: number }>;
+}): Promise<Rubric> {
+  const rubric: Rubric = unwrap(
+    await supabase
+      .from("rubrics")
+      .insert({
+        class_id: input.class_id,
+        document_id: input.document_id,
+        title: input.title,
+      })
+      .select()
+      .single(),
+  );
+
+  if (input.criteria.length) {
+    const { error } = await supabase.from("rubric_criteria").insert(
+      input.criteria.map((c, i) => ({
+        rubric_id: rubric.id,
+        label: c.label,
+        weight: c.weight,
+        max_score: c.max_score,
+        position: i,
+      })),
+    );
+    if (error) throw error;
+  }
+
+  return rubric;
+}
+
+export async function addCriterion(input: {
+  rubric_id: string;
+  label: string;
+  weight: number;
+  max_score: number;
+  position: number;
+}): Promise<RubricCriterion> {
+  return unwrap(await supabase.from("rubric_criteria").insert(input).select().single());
+}
+
+/**
+ * Edit one component — usually to enter a mark.
+ *
+ * `score: null` is a first-class value here and means ungraded: clearing the
+ * box has to be able to say "not marked yet", which is a different statement
+ * from zero and the one the total depends on. See `lib/grades.ts`.
+ */
+export async function updateCriterion(
+  id: string,
+  patch: Partial<Pick<RubricCriterion, "label" | "weight" | "max_score" | "score">>,
+): Promise<RubricCriterion> {
+  return unwrap(
+    await supabase
+      .from("rubric_criteria")
+      .update(patch)
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
+export async function deleteCriterion(id: string): Promise<void> {
+  const { error } = await supabase.from("rubric_criteria").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteRubric(id: string): Promise<void> {
+  const { error } = await supabase.from("rubrics").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Which calendar series is which class
+// ---------------------------------------------------------------------------
+
+export async function listClassEventLinks(): Promise<ClassEventLink[]> {
+  return unwrap(await supabase.from("class_event_links").select("*"));
+}
+
+/**
+ * Remember that a recurring lecture belongs to a class.
+ *
+ * Upserted on the series, so answering again simply changes the answer — a
+ * second row would be two claims about one lecture with no rule for choosing
+ * between them.
+ */
+export async function linkEventSeries(input: {
+  user_id: string;
+  google_series_id: string;
+  class_id: string;
+}): Promise<ClassEventLink> {
+  return unwrap(
+    await supabase
+      .from("class_event_links")
+      .upsert(input, { onConflict: "user_id,google_series_id" })
+      .select()
+      .single(),
+  );
+}
+
+export async function unlinkEventSeries(seriesId: string): Promise<void> {
+  const { error } = await supabase
+    .from("class_event_links")
+    .delete()
+    .eq("google_series_id", seriesId);
+  if (error) throw error;
 }

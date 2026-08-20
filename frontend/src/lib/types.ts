@@ -273,6 +273,16 @@ export type PlanBlock = {
   task_id: string | null;
   routine_id: string | null;
   google_event_id: string | null;
+  /**
+   * The recurring series this occurrence belongs to, on event blocks only.
+   *
+   * Google expands a weekly lecture into one row per week, so the event id
+   * changes every Monday and the series id does not. That is what
+   * `class_event_links` is keyed on, and therefore what lets the grid say
+   * which class a lecture is without asking again every week. Null on rows
+   * mirrored before migration 0011; they pick it up on the next refresh.
+   */
+  google_series_id: string | null;
   /** Set on event blocks only. A task block reads its title off the task. */
   title: string | null;
   starts_at: string;
@@ -286,4 +296,105 @@ export type PlanBlock = {
   dismissed: boolean;
   created_at: string;
   updated_at: string;
+};
+
+// ---------------------------------------------------------------------------
+// Phase 10 — uploaded documents, and the two things read out of them
+// ---------------------------------------------------------------------------
+
+export type DocumentKind = "timetable" | "rubric";
+
+/**
+ * A file a professor handed out, kept after it has been read.
+ *
+ * `storage_path` is an object path in the private `class-docs` bucket, never
+ * a URL — the same rule note images have followed since phase 05. The browser
+ * signs a short-lived URL when someone actually opens it.
+ */
+export type ClassDocument = {
+  id: string;
+  user_id: string;
+  class_id: string;
+  kind: DocumentKind;
+  title: string;
+  storage_path: string;
+  mime_type: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * One line of a course's schedule.
+ *
+ * Not a task, and this is the deliberate reversal of PLAN.md's original phase
+ * 10 line. A lecture is something you attend, not something you complete: it
+ * has no status, never archives, and never reaches the board or the forecast.
+ * What it has is a date and a topic, which is exactly enough for the week grid
+ * to say what Wednesday's class is about.
+ *
+ * `is_assessment` marks the quiz and midterm rows a timetable also carries.
+ * They stay schedule too — a star you read on the way past. Turning one into
+ * revision work is a task you add yourself.
+ */
+export type ClassSession = {
+  id: string;
+  user_id: string;
+  class_id: string;
+  /** Null once the document it was extracted from has been deleted. */
+  document_id: string | null;
+  /** A local calendar date, "YYYY-MM-DD" — not an instant. */
+  on_date: string;
+  topic: string;
+  details: string | null;
+  is_assessment: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Rubric = {
+  id: string;
+  user_id: string;
+  class_id: string;
+  document_id: string | null;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * One graded component of a course.
+ *
+ * `score` null is **ungraded**, which is not zero and must never render as
+ * one. A midterm you have not sat yet is excluded from the weighted total
+ * rather than counted as a nought — see `lib/grades.ts`, which is why the
+ * total is stated as a share of what has been graded so far.
+ */
+export type RubricCriterion = {
+  id: string;
+  user_id: string;
+  rubric_id: string;
+  label: string;
+  /** Percent of the final grade. */
+  weight: number;
+  /** What this component is marked out of. Never assumed to be 100. */
+  max_score: number;
+  score: number | null;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * "This recurring calendar event is that class."
+ *
+ * Answered once per series rather than once per lecture, and answered by a
+ * person: the picker suggests a match on the title and you confirm it. A
+ * silent title match would put the wrong topic on the wrong lecture with
+ * nothing on screen explaining why.
+ */
+export type ClassEventLink = {
+  user_id: string;
+  google_series_id: string;
+  class_id: string;
+  created_at: string;
 };

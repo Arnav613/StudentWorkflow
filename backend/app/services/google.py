@@ -566,6 +566,17 @@ async def list_events(token: str, start: datetime, end: datetime) -> list[dict]:
                 out.append(
                     {
                         "id": event.get("id", ""),
+                        # Which recurring event this occurrence belongs to,
+                        # falling back to the occurrence itself for a one-off.
+                        #
+                        # `singleEvents` above expands a weekly lecture into
+                        # one row per week, each with its own id, so the
+                        # occurrence id is the wrong thing to remember an
+                        # answer against — "this is CS 201" would have to be
+                        # said again every Monday. This is the id that holds
+                        # still for a term. See class_event_links in 0011.
+                        "series_id": event.get("recurringEventId")
+                        or event.get("id", ""),
                         # A private event on a shared calendar comes back with
                         # no summary at all. "Busy" is the honest rendering of
                         # a thing we know occupies time and nothing else.

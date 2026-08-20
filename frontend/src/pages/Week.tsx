@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -29,6 +29,7 @@ import {
   clockOfMinutes,
   formatMinutes,
   hhmmOf,
+  isoDate,
   planDays,
   planWeek,
   snapUp,
@@ -63,6 +64,7 @@ import TimePicker from "../components/TimePicker";
 import type { DataStore } from "../hooks/useData";
 import type {
   Class,
+  ClassSession,
   PlanBlock,
   Routine,
   RoutineOverride,
@@ -159,6 +161,84 @@ export default function WeekPage({
     () => new Map<string, Routine>(routines.map((r) => [r.id, r])),
     [routines],
   );
+
+  /* --- What a lecture is, and what is on in it ---------------------------- */
+
+  /**
+   * Which calendar series belongs to which class, and this fortnight's
+   * schedule — phase 10.
+   *
+   * Loaded here rather than in `useData` for the same reason the proposal
+   * queue is: both are small, rare tables that only this screen and the class
+   * tabs read, and putting them in the shared load would make every board
+   * refresh pay for rows the board never looks at.
+   */
+  const [eventLinks, setEventLinks] = useState<Map<string, string>>(new Map());
+  const [sessions, setSessions] = useState<ClassSession[]>([]);
+
+  const loadSchedule = useCallback(async () => {
+    try {
+      const [links, rows] = await Promise.all([
+        db.listClassEventLinks(),
+        db.listSessionsBetween(isoDate(planFrom), isoDate(addDays(planFrom, DAYS))),
+      ]);
+      setEventLinks(new Map(links.map((l) => [l.google_series_id, l.class_id])));
+      setSessions(rows);
+    } catch {
+      // Silent, and deliberately. Neither of these is the week: without them
+      // the grid draws exactly what it drew before phase 10 existed, and a red
+      // banner over a perfectly correct chart would be the app reporting its
+      // own optional extra as a failure.
+    }
+  }, [planFrom]);
+
+  useEffect(() => {
+    void loadSchedule();
+  }, [loadSchedule]);
+
+  /**
+   * The class a lecture belongs to: the answer you gave, or nothing.
+   *
+   * Only a confirmed link counts. The title guess below is offered as a
+   * suggestion in the picker and is never treated as an answer — showing
+   * Tuesday's topic against a lecture matched on a substring would be the app
+   * quietly asserting something nobody told it.
+   */
+  function linkedClassOf(block: PlanBlock): Class | null {
+    const series = block.google_series_id ?? block.google_event_id;
+    if (!series) return null;
+    const id = eventLinks.get(series);
+    return id ? classById.get(id) ?? null : null;
+  }
+
+  /** What is on in this lecture: the class's session for the day it falls on. */
+  function sessionOf(block: PlanBlock): ClassSession | null {
+    const cls = linkedClassOf(block);
+    if (!cls) return null;
+    const key = isoDate(new Date(block.starts_at));
+    return (
+      sessions.find((s) => s.class_id === cls.id && s.on_date === key) ?? null
+    );
+  }
+
+  async function linkSeries(block: PlanBlock, classId: string) {
+    const series = block.google_series_id ?? block.google_event_id;
+    if (!series) return;
+    try {
+      if (classId) {
+        await db.linkEventSeries({
+          user_id: userId,
+          google_series_id: series,
+          class_id: classId,
+        });
+      } else {
+        await db.unlinkEventSeries(series);
+      }
+      await loadSchedule();
+    } catch (e) {
+      toast(errorText(e, "Could not link that lecture"), "error");
+    }
+  }
 
   /*
    * The calendar refresh, behind the render rather than in front of it.
@@ -342,6 +422,11 @@ export default function WeekPage({
   function hueOf(block: PlanBlock): string {
     if (block.routine_id) return "hue-routine";
     if (block.google_event_id) {
+      // The answer first, the guess second. Before phase 10 a lecture could
+      // only ever be matched on its title; now that a person can say which
+      // class it is, what they said outranks what the string looked like.
+      const linked = linkedClassOf(block);
+      if (linked) return `hue-${linked.color}`;
       const guess = classForEvent(block.title, classes);
       return guess ? `hue-${guess.color}` : "hue-none";
     }
@@ -1116,6 +1201,7 @@ export default function WeekPage({
               task_id: subject.task.id,
               routine_id: null,
               google_event_id: null,
+              google_series_id: null,
               title: null,
               starts_at,
               ends_at,
@@ -1263,6 +1349,7 @@ export default function WeekPage({
           task_id: pl.task_id,
           routine_id: null,
           google_event_id: null,
+          google_series_id: null,
           title: null,
           starts_at: pl.starts_at,
           ends_at: pl.ends_at,
@@ -1445,6 +1532,11 @@ export default function WeekPage({
                         : null
                     }
                     cls={classById}
+                    classes={classes}
+                    eventClass={linkedClassOf(p.item)}
+                    eventSession={sessionOf(p.item)}
+                    eventSuggestion={classForEvent(p.item.title, classes)}
+                    onLinkSeries={(id) => void linkSeries(p.item, id)}
                     onRetime={(t) => void retime(p.item, t)}
                     onResize={(t) => void resize(p.item, t)}
                     onOpenClass={onOpenClass}
@@ -1682,6 +1774,11 @@ function BlockBar({
   task,
   routine,
   cls,
+  classes,
+  eventClass,
+  eventSession,
+  eventSuggestion,
+  onLinkSeries,
   onRetime,
   onResize,
   onOpenClass,
@@ -1699,6 +1796,16 @@ function BlockBar({
   task: Task | null;
   routine: Routine | null;
   cls: Map<string, Class>;
+  /** Every class, for the picker on a lecture. Empty for anything else. */
+  classes: Class[];
+  /** The class this lecture was confirmed to be, or null if never answered. */
+  eventClass: Class | null;
+  /** What is on in it, when the class has a timetable covering that day. */
+  eventSession: ClassSession | null;
+  /** A title match, offered as a suggestion and never applied on its own. */
+  eventSuggestion: Class | null;
+  /** "" unlinks. Remembered against the whole recurring series. */
+  onLinkSeries: (classId: string) => void;
   onRetime: (hhmm: string) => void;
   onResize: (hhmm: string) => void;
   onOpenClass: (id: string) => void;
@@ -1824,9 +1931,68 @@ function BlockBar({
             <span className="muted small pop-length">{formatMinutes(minutes)}</span>
           </div>
 
+          {/*
+            What this lecture is, and what is on in it — phase 10.
+
+            A calendar block used to say "Calendar" and stop there, which is
+            all Google gives us: a title string and two times. Told once which
+            class the series is, the app can put the professor's own topic for
+            that day on the block you are looking at on the Wednesday morning.
+
+            The link is asked for, never assumed. The suggestion below is the
+            same title match that already picks the bar's colour, and it stays
+            a suggestion: a lecture silently attached to the wrong class would
+            show the wrong topic with nothing on screen to explain why.
+          */}
+          {event && (
+            <div className="pop-lecture small">
+              {eventSession ? (
+                <>
+                  <p className="pop-session-topic">{eventSession.topic}</p>
+                  {eventSession.details && (
+                    <p className="muted">{eventSession.details}</p>
+                  )}
+                  {eventSession.is_assessment && (
+                    <span className="tag">Assessment</span>
+                  )}
+                </>
+              ) : eventClass ? (
+                /* Linked, and the timetable simply has nothing for this day —
+                   a reading week, or a term only half uploaded. Said plainly,
+                   because silence here reads as the link not having worked. */
+                <p className="muted">
+                  No topic for this day in {eventClass.name}&rsquo;s timetable.
+                </p>
+              ) : null}
+
+              <div className="row pop-link">
+                <span className="muted">Class</span>
+                <ClassPicker
+                  classes={classes}
+                  value={eventClass?.id ?? ""}
+                  onChange={onLinkSeries}
+                />
+              </div>
+              {!eventClass && eventSuggestion && (
+                <button
+                  className="link"
+                  onClick={() => onLinkSeries(eventSuggestion.id)}
+                >
+                  This is {eventSuggestion.name}
+                </button>
+              )}
+              {/* Said once, because the scope of the answer is the surprising
+                  part: you are not labelling Wednesday, you are labelling
+                  every Wednesday. */}
+              <p className="muted">Remembered for every lecture in this series.</p>
+            </div>
+          )}
+
           <div className="pop-meta small">
             {event ? (
-              <span className="muted">Calendar</span>
+              <span className="muted">
+                {eventClass ? eventClass.name : "Calendar"}
+              </span>
             ) : routine ? (
               <span className="muted">Repeats</span>
             ) : klass ? (

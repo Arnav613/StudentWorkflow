@@ -126,3 +126,135 @@ async def summarise_link(
     )
 
     return SummaryResponse(summary=summary, generated_at=generated_at)
+
+
+# ---------------------------------------------------------------------------
+# Reading an uploaded document — phase 10
+# ---------------------------------------------------------------------------
+#
+# One route for two schemas, because the pipeline either side of the model is
+# identical: the browser has already uploaded the file to `class-docs` under
+# its own RLS and written the `class_documents` row, and all that is left is
+# to read the bytes and ask.
+#
+# This route writes nothing. It returns rows, the browser puts them in an
+# editable table, and Confirm — which is a plain Supabase insert from the
+# browser, RLS-protected like every other write in this app — is what makes
+# them real. That is PLAN.md's rule with the review step moved on screen: a
+# `proposals` row would outlive the moment in which the person is still
+# holding the handout, which is the only moment they can check it in.
+
+
+class ExtractRequest(BaseModel):
+    document_id: str
+
+
+class ExtractedSession(BaseModel):
+    date: str
+    topic: str
+    details: str = ""
+    is_assessment: bool = False
+
+
+class ExtractedCriterion(BaseModel):
+    label: str
+    weight: float
+    max_score: float
+
+
+class ExtractResponse(BaseModel):
+    """What the document seems to say, and nothing written down.
+
+    `kind` is echoed back so the review table knows which of the two lists to
+    render without having to remember what it asked for — the upload may well
+    have finished in a tab that has since been reloaded.
+
+    Both lists can be empty, and an empty list is not an error: a photograph
+    of the wrong page is an ordinary mistake, and it earns the sentence in
+    `note` rather than a red box.
+    """
+
+    kind: str
+    title: str = ""
+    sessions: list[ExtractedSession] = []
+    criteria: list[ExtractedCriterion] = []
+    note: str | None = None
+
+
+@router.post("/extract", response_model=ExtractResponse)
+async def extract(
+    body: ExtractRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> ExtractResponse:
+    if not ai.enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI is turned off on this deployment",
+        )
+
+    # Service role bypasses RLS, so the user_id filter is this function's job.
+    # It is also what makes the storage read below safe: the path is taken off
+    # a row this query proved belongs to the caller, never off the request.
+    rows = await db.select(
+        "class_documents", id=db.eq(body.document_id), user_id=db.eq(user.id)
+    )
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such document")
+    doc = rows[0]
+
+    classes = await db.select("classes", id=db.eq(doc["class_id"]), user_id=db.eq(user.id))
+    course_name = classes[0]["name"] if classes else ""
+
+    try:
+        data = await db.download_object("class-docs", doc["storage_path"])
+    except db.DbError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "That file could not be read back"
+        ) from exc
+
+    mime = doc.get("mime_type") or ""
+
+    try:
+        if doc["kind"] == "timetable":
+            sessions = await ai.extract_timetable(
+                course_name=course_name,
+                today=datetime.now(timezone.utc).date(),
+                data=data,
+                mime_type=mime,
+            )
+            return ExtractResponse(
+                kind="timetable",
+                sessions=[
+                    ExtractedSession(
+                        date=s.on_date,
+                        topic=s.topic,
+                        details=s.details,
+                        is_assessment=s.is_assessment,
+                    )
+                    for s in sessions
+                ],
+                note=(
+                    None
+                    if sessions
+                    else "No dated rows were found in this document."
+                ),
+            )
+
+        title, criteria = await ai.extract_rubric(
+            course_name=course_name, data=data, mime_type=mime
+        )
+        return ExtractResponse(
+            kind="rubric",
+            title=title,
+            criteria=[
+                ExtractedCriterion(
+                    label=c.label, weight=c.weight, max_score=c.max_score
+                )
+                for c in criteria
+            ],
+            note=None if criteria else "No graded components were found in this document.",
+        )
+    except ai.AiUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except ai.AiError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc

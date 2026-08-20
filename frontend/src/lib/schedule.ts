@@ -331,6 +331,32 @@ export function dayKey(d: Date | string): string {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
+/**
+ * A local calendar date as "YYYY-MM-DD" — the shape `class_sessions.on_date`
+ * is stored in.
+ *
+ * Not `toISOString().slice(0, 10)`, which converts to UTC first and therefore
+ * names yesterday for anyone east of Greenwich before their morning. And not
+ * `dayKey` above, whose month is zero-based and whose parts are unpadded: that
+ * one is an identity for grouping blocks by column and is deliberately not a
+ * date anybody reads or compares.
+ */
+export function isoDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** "Wed 27 Aug" — an `on_date` as a person reads it, in the local calendar. */
+export function formatSessionDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+}
+
 /*
  * Where a dropped block starts used to be decided here, by `timeForSlot`,
  * from the two neighbours it landed between.

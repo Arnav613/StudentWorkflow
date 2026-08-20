@@ -51,8 +51,12 @@ export default function DocsPanel({
    *
    * `reasons` holds the answers that are not summaries — a PDF, a plain link,
    * a permission not granted. They are kept in memory and not in the database
-   * because none of them is a fact about the document: grant the permission,
-   * or wait for phase 10 to read PDFs, and the same row answers differently.
+   * because none of them is a fact about the document: grant the permission
+   * and the same row answers differently.
+   *
+   * Phase 10 taught the app to read a PDF, but only one it was handed — an
+   * upload, on the Timetable or Grades tab. This tab is still links, and the
+   * rule that this server does not fetch a URL somebody typed has not moved.
    */
   const [summarising, setSummarising] = useState<string | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});

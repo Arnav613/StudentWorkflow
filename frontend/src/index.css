@@ -2929,3 +2929,170 @@ button.link.danger:hover:not(:disabled) {
   gap: 0.15rem;
   min-width: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Phase 10 — timetables, rubrics, and the lecture that knows what it is about
+   -------------------------------------------------------------------------*/
+
+/* A row of controls that is not a form grid. `.docs-form` is three columns
+   because the link form has three fields; a file input beside a Confirm
+   button wants none of that. */
+.doc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.doc-row > h2 {
+  margin: 0;
+}
+
+/* --- The review tables ---------------------------------------------------- */
+
+/* Wider gaps than a display list, because every cell here is an input and
+   two text boxes flush against each other read as one field. */
+.session-review > li,
+.criteria-review > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--faint);
+}
+
+.session-review input[type="date"] {
+  flex: none;
+}
+
+.criteria-review label,
+.criterion-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+/* Numbers are short. Left as content-width rather than stretching to the row,
+   so a weight column stays a column instead of a paragraph-wide box. */
+.criteria-review input[type="number"],
+.criterion-row input[type="number"] {
+  width: 5.5rem;
+}
+
+/* --- The schedule --------------------------------------------------------- */
+
+.session-list > li {
+  align-items: baseline;
+  gap: 0.7rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--faint);
+}
+
+/* Fixed, so the dates form a column the eye can run down. A schedule whose
+   first column ragged out with the length of each weekday name would be a
+   list of dates you have to read one at a time. */
+.session-date {
+  flex: none;
+  width: 6.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-topic {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.session-details {
+  display: block;
+}
+
+/* Dimmed, not hidden — inside a fold that is already closed by default, so
+   this is only ever seen by someone who went looking for it. */
+.session-row.is-past {
+  opacity: 0.65;
+}
+
+.session-past {
+  margin-top: 0.6rem;
+}
+
+.session-past > summary {
+  cursor: pointer;
+}
+
+.next-class-date {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.next-class-topic {
+  font-size: 1.1rem;
+  margin: 0.2rem 0 0;
+}
+
+/* --- Grades --------------------------------------------------------------- */
+
+.criterion-row {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--faint);
+}
+
+.criterion-max {
+  flex: none;
+  align-self: end;
+  padding-bottom: 0.45rem;
+}
+
+.criterion-points {
+  flex: none;
+  align-self: end;
+  padding-bottom: 0.45rem;
+  min-width: 7rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one number this tab exists for, and the qualifier that keeps it honest
+   — set at the same size as the figure rather than shrunk into a footnote,
+   because "of the 30% graded so far" is not a caveat, it is half the claim. */
+.grade-total {
+  margin: 0.8rem 0 0;
+  font-size: 1.15rem;
+}
+
+.grade-total .muted {
+  font-size: 0.9rem;
+}
+
+/* --- A lecture, in the week popover --------------------------------------- */
+
+.pop-lecture {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--faint);
+}
+
+.pop-lecture > p {
+  margin: 0;
+}
+
+.pop-session-topic {
+  font-weight: 500;
+}
+
+.pop-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}

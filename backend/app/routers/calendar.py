@@ -39,6 +39,13 @@ MAX_DAYS = 21
 
 class CalendarEvent(BaseModel):
     id: str
+    """The recurring series this occurrence belongs to, or its own id.
+
+    Phase 10 uses it to remember which class a lecture is, once, instead of
+    asking again about every Monday of the term. It is an opaque Google id and
+    carries nothing about the event beyond identity.
+    """
+    series_id: str = ""
     title: str
     starts_at: str
     ends_at: str

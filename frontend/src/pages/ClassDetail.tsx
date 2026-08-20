@@ -6,11 +6,18 @@ import type { ClassTab } from "./Board";
 import { toast, undoable } from "../lib/toast";
 import TaskBoard from "../components/TaskBoard";
 import DocsPanel from "../components/DocsPanel";
+import TimetablePanel from "../components/TimetablePanel";
+import GradesPanel from "../components/GradesPanel";
 
 const TABS: { id: ClassTab; label: string }[] = [
   { id: "tasks", label: "Tasks" },
   { id: "notes", label: "Notes" },
   { id: "docs", label: "Docs" },
+  // Phase 10. Two tabs and not one, because they answer different questions
+  // on different days: Timetable is "what is on this week", Grades is "where
+  // do I stand". They share an upload control and nothing else.
+  { id: "timetable", label: "Timetable" },
+  { id: "grades", label: "Grades" },
 ];
 
 /**
@@ -133,6 +140,18 @@ export default function ClassDetail({
 
       {tab === "docs" && (
         <DocsPanel classId={cls.id} userId={store.userId} aiEnabled={aiEnabled} />
+      )}
+
+      {tab === "timetable" && (
+        <TimetablePanel
+          classId={cls.id}
+          userId={store.userId}
+          aiEnabled={aiEnabled}
+        />
+      )}
+
+      {tab === "grades" && (
+        <GradesPanel classId={cls.id} userId={store.userId} aiEnabled={aiEnabled} />
       )}
     </div>
   );
