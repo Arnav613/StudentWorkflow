@@ -144,23 +144,23 @@ export default function ClassDetail({
       )}
 
       {/*
-        Two halves of one question, in the order they have to be answered.
-        Which calendar entry is this class comes first, because the timetable
-        underneath it is only useful once something on the grid is pointed at
-        this course — a term of topics attached to nothing is a document, not a
-        schedule.
+        Two halves of one question, in the order you meet them. The schedule is
+        what the tab is for and what you come back to; which calendar entry is
+        this class is answered once a term and then never again, so it sits
+        underneath, shut, rather than standing between you and the timetable
+        every visit.
       */}
       {tab === "timetable" && (
         <div className="stack">
-          <LecturesPanel
-            cls={cls}
-            classes={store.classes}
-            userId={store.userId}
-          />
           <TimetablePanel
             classId={cls.id}
             userId={store.userId}
             aiEnabled={aiEnabled}
+          />
+          <LecturesPanel
+            cls={cls}
+            classes={store.classes}
+            userId={store.userId}
           />
         </div>
       )}

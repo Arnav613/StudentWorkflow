@@ -3194,6 +3194,44 @@ button.link.danger:hover:not(:disabled) {
    happens, and a single verb.
    -------------------------------------------------------------------------*/
 
+/* Shut by default, so the row of calendar entries is something you go to
+   rather than something that greets you. The summary is the whole header:
+   label on the left, the answer on the right, one click to open. */
+.lecture-panel > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  list-style: none;
+  margin: 0;
+}
+
+.lecture-panel[open] > summary {
+  margin-bottom: 0.85rem;
+}
+
+.lecture-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Our own marker, after the label, so the summary reads left to right and the
+   caret does not push the status text off the end on a narrow screen. */
+.lecture-panel > summary > h2::after {
+  content: "B8";
+  margin-left: 0.4rem;
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.lecture-panel[open] > summary > h2::after {
+  transform: rotate(90deg);
+}
+
+.lecture-panel > summary > .muted {
+  margin-left: auto;
+  text-align: right;
+}
+
 .lecture-links {
   gap: 0.25rem;
 }

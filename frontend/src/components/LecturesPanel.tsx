@@ -30,6 +30,12 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
  * It is asked per *series*: Google expands a weekly lecture into one row a
  * week, and answering per occurrence would ask the same question every Monday
  * for a term.
+ *
+ * Folded shut until asked for. It is a question you answer once a term, and a
+ * class page that opens with a list of calendar entries on it is a page about
+ * somebody's calendar rather than about the course. The summary line carries
+ * the answer, so the fold still says whether it has been answered without
+ * being opened — and the calendar is only read once it is.
  */
 export default function LecturesPanel({
   cls,
@@ -50,6 +56,8 @@ export default function LecturesPanel({
   /** The series being written, so its own row can say so and not the others. */
   const [busy, setBusy] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  /** Shut on arrival; nothing below is fetched until it is opened. */
+  const [open, setOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,8 +81,8 @@ export default function LecturesPanel({
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (open) void load();
+  }, [open, load]);
 
   const linkedTo = useMemo(
     () => new Map(links.map((l) => [l.google_series_id, l.class_id])),
@@ -147,15 +155,21 @@ export default function LecturesPanel({
   }
 
   return (
-    <section className="panel">
-      <div className="panel-head">
+    <details
+      className="panel lecture-panel"
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="panel-head">
         <h2>Lectures</h2>
         <span className="muted small">
-          {mine.length
-            ? `${mine.length} calendar ${mine.length === 1 ? "entry is" : "entries are"} ${cls.name}`
-            : "Which of your calendar entries is this class?"}
+          {loading
+            ? "Reading your calendar…"
+            : mine.length
+              ? `${mine.length} calendar ${mine.length === 1 ? "entry is" : "entries are"} ${cls.name}`
+              : "Which of your calendar entries is this class?"}
         </span>
-      </div>
+      </summary>
 
       {/* Said plainly, because this is the sentence that explains why the
           timetable below is worth uploading at all. */}
@@ -227,6 +241,6 @@ export default function LecturesPanel({
           )}
         </>
       )}
-    </section>
+    </details>
   );
 }
