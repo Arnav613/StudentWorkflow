@@ -2052,6 +2052,11 @@ button.link.danger:hover:not(:disabled) {
   flex-wrap: wrap;
 }
 
+.week-actions {
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .week {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -2098,6 +2103,14 @@ button.link.danger:hover:not(:disabled) {
   padding: 0.45rem 0.55rem;
   gap: 0.2rem;
   font-size: 0.85rem;
+  min-width: 0;
+}
+
+/* The card drags from anywhere, so the whole card says so. The clock and the
+   buttons stop the gesture themselves — see BlockCard — rather than the card
+   restricting it to one line of text nobody could be expected to find. */
+.list > li.card.block:active {
+  cursor: grabbing;
 }
 
 .block-time {
@@ -2137,36 +2150,38 @@ button.link.danger:hover:not(:disabled) {
   border-color: var(--border);
 }
 
+/* Wider than the card it hangs off, because a nine-rem column would otherwise
+   set the width of a list of times, and shorter than the form version so it
+   has a chance of fitting inside the week's scroll container on a medium
+   screen — where `.week` becomes a scroll box and clips what overflows it. */
+.picker-compact > .picker-pop {
+  min-width: 9rem;
+  max-height: 15rem;
+}
+
 /*
- * Three lines, then an ellipsis, and it may break mid-word.
+ * The title wraps, as many lines as it takes, and may break mid-word.
  *
- * A course title is not a sentence with convenient spaces in it —
- * "MATH-2101/Multivariable" is one unbreakable token as far as the browser is
- * concerned, and in a column nine rem wide it used to hang straight out of the
- * card. `anywhere` is the only value that will split a run like that; the
- * clamp then stops a long one pushing the rest of Thursday down the page.
+ * Two earlier attempts clamped it — first to two lines, then to three — and
+ * both were the wrong fix for the wrong reading of the problem. The complaint
+ * was never that titles were long, it was that they did not fit: a course
+ * title is not a sentence with convenient spaces in it, and
+ * "MATH-2101/Multivariable" is a single unbreakable token as far as the
+ * browser is concerned, so in a nine-rem column it hung straight out of the
+ * card no matter how few lines it was allowed. `anywhere` is the only value
+ * that splits a run like that, and `-webkit-box` was quietly fighting it.
+ *
+ * So the card grows instead. A tall card is legible; a clipped one makes you
+ * open something else to find out which lecture it is, which is the entire
+ * job this text has.
  */
 .block-title {
   font-weight: 500;
   line-height: 1.3;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
   hyphens: auto;
-  min-width: 0;
-}
-
-/* The title is the drag handle now — the time under it became a button, and a
-   card that dragged from everywhere would swallow the click that opens it. */
-.block-title.grabbable {
-  cursor: grab;
-}
-
-.block-title.grabbable:active {
-  cursor: grabbing;
 }
 
 .block-actions {
@@ -2234,6 +2249,12 @@ button.link.danger:hover:not(:disabled) {
 }
 
 /* ---- Routines ----------------------------------------------------------- */
+
+.routine-presets {
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
 
 .routine-form {
   display: flex;
@@ -2338,15 +2359,6 @@ button.link.danger:hover:not(:disabled) {
   opacity: 0.55;
 }
 
-/* ---- The hours a column obeys ------------------------------------------- */
-
-.day-hours {
-  margin: -0.25rem 0 0.45rem;
-  font-size: 0.72rem;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
 /* ---- The unplanned rail, as a place to drop things ---------------------- */
 
 .unplanned-rail {
@@ -2382,38 +2394,6 @@ button.link.danger:hover:not(:disabled) {
   opacity: 0.4;
 }
 
-/* ---- Study hours -------------------------------------------------------- */
-
-.hours-suggest {
-  margin-bottom: 0.9rem;
-}
-
-.hours-suggest-row {
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.4rem;
-}
-
-.list.hours-list > li {
-  gap: 0.5rem;
-  padding: 0.35rem 0.15rem;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-
-.list.hours-list > li:last-child {
-  border-bottom: 0;
-}
-
-.list.hours-list > li.paused {
-  opacity: 0.5;
-}
-
-.hours-day {
-  min-width: 6rem;
-  font-weight: 500;
-}
-
 /*
  * Seven columns need a wide screen and gracefully become a scrolling strip
  * rather than seven unreadable slivers. Below that, one column per day
@@ -2436,7 +2416,11 @@ button.link.danger:hover:not(:disabled) {
   .column.day {
     min-height: 0;
   }
-  .week-head button {
+  .week-head .week-actions {
     width: 100%;
+  }
+
+  .week-head .week-actions button {
+    flex: 1;
   }
 }

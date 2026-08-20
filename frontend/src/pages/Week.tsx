@@ -25,19 +25,18 @@ import {
   byDay,
   classMedians,
   clockOf,
-  clockOfMinutes,
   formatMinutes,
   hhmmOf,
   planDays,
   planWeek,
+  snapMinutes,
   timeForSlot,
   unscheduled,
 } from "../lib/schedule";
 import RoutinesPanel from "../components/RoutinesPanel";
-import HoursPanel from "../components/HoursPanel";
 import TimePicker from "../components/TimePicker";
 import type { DataStore } from "../hooks/useData";
-import type { Class, PlanBlock, Routine, StudyWindow, Task } from "../lib/types";
+import type { Class, PlanBlock, Routine, Task } from "../lib/types";
 
 const DAYS = 7;
 
@@ -72,12 +71,13 @@ export default function WeekPage({
     tasks,
     routines,
     planBlocks,
-    studyWindows,
     planFrom,
     refresh,
+    setPlanBlocks,
     userId,
   } = store;
   const [generating, setGenerating] = useState(false);
+  const [resyncing, setResyncing] = useState(false);
   const [calendarGranted, setCalendarGranted] = useState<boolean | null>(null);
 
   const days = useMemo(() => planDays(planFrom, DAYS), [planFrom]);
@@ -180,7 +180,6 @@ export default function WeekPage({
         routines,
         busy,
         locked: onBoard.filter((b) => b.locked && !b.google_event_id),
-        windows: studyWindows,
         from: new Date(),
         days: DAYS,
         medians,
@@ -207,15 +206,69 @@ export default function WeekPage({
     }
   }
 
+  /**
+   * Put the calendar back the way Google has it.
+   *
+   * The background sync keeps your local edits on purpose — a lecture you
+   * moved keeps your time, a lecture you dropped stays dropped — which is
+   * right until the board has drifted far enough that repairing it block by
+   * block is worse than starting again. So the reset is a button, pressed
+   * deliberately, and it says what it will lose before it does it.
+   *
+   * Only the mirror is reset. Work and routines are not Google's to restore
+   * and are not touched.
+   */
+  async function resync() {
+    setResyncing(true);
+    try {
+      const res = await getCalendar(DAYS);
+      if (!res.granted) {
+        setCalendarGranted(false);
+        toast("No calendar access to sync with", "info");
+        return;
+      }
+      await db.resyncCalendar(userId, res.events, planFrom, addDays(planFrom, DAYS));
+      await refresh();
+      toast("Calendar back in step with Google", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not reach your calendar", "error");
+    } finally {
+      setResyncing(false);
+    }
+  }
+
   /* --- Manual edits. All of these lock the block. See db.moveBlock. -------- */
 
+  /*
+   * Moved on screen first, saved second.
+   *
+   * This used to await the write and then a full refresh() before touching
+   * state, so the card sprang back to where it came from, sat there for as
+   * long as two round trips took, and then appeared somewhere else — the app
+   * visibly undoing your drag and then re-doing it. A drag is direct
+   * manipulation: the thing goes where you put it, and only a failure moves it
+   * back.
+   */
   async function commitMove(block: PlanBlock, start: Date, minutes?: number) {
     const length = minutes ?? blockMinutes(block);
-    const end = new Date(start.getTime() + length * 60_000);
+    const starts_at = start.toISOString();
+    const ends_at = new Date(start.getTime() + length * 60_000).toISOString();
+    const previous = planBlocks;
+
+    setPlanBlocks((prev) =>
+      inOrder(
+        prev.map((b) =>
+          b.id === block.id
+            ? { ...b, starts_at, ends_at, locked: true, dismissed: false }
+            : b,
+        ),
+      ),
+    );
+
     try {
-      await db.moveBlock(block.id, start.toISOString(), end.toISOString());
-      await refresh();
+      await db.moveBlock(block.id, starts_at, ends_at);
     } catch (e) {
+      setPlanBlocks(previous);
       toast(e instanceof Error ? e.message : "Could not move that block", "error");
     }
   }
@@ -241,11 +294,17 @@ export default function WeekPage({
    * longer accounted for.
    */
   async function clear(block: PlanBlock) {
+    const previous = planBlocks;
+    setPlanBlocks((prev) =>
+      block.google_event_id
+        ? prev.map((b) => (b.id === block.id ? { ...b, dismissed: true } : b))
+        : prev.filter((b) => b.id !== block.id),
+    );
     try {
       if (block.google_event_id) await db.setDismissed(block.id, true);
       else await db.deleteBlock(block.id);
-      await refresh();
     } catch (e) {
+      setPlanBlocks(previous);
       toast(e instanceof Error ? e.message : "Could not remove that block", "error");
     }
   }
@@ -334,7 +393,6 @@ export default function WeekPage({
       day,
       after: lastBefore(list, at.index, held),
       minutes: subject.minutes,
-      windows: studyWindows,
     });
 
     if (start.getTime() + subject.minutes * 60_000 <= Date.now()) {
@@ -344,20 +402,57 @@ export default function WeekPage({
 
     try {
       if (subject.kind === "task") {
-        await db.createTaskBlock({
-          user_id: userId,
-          task_id: subject.task.id,
-          starts_at: start.toISOString(),
-          ends_at: new Date(start.getTime() + subject.minutes * 60_000).toISOString(),
-        });
-        await refresh();
+        // Same reasoning as commitMove: the card appears where it was dropped
+        // and the insert catches up. The placeholder carries a temporary id
+        // only until the real row comes back.
+        const starts_at = start.toISOString();
+        const ends_at = new Date(
+          start.getTime() + subject.minutes * 60_000,
+        ).toISOString();
+        const temp = `pending-${subject.task.id}-${starts_at}`;
+        const previous = planBlocks;
+        setPlanBlocks((prev) =>
+          inOrder([
+            ...prev,
+            {
+              id: temp,
+              user_id: userId,
+              task_id: subject.task.id,
+              routine_id: null,
+              google_event_id: null,
+              title: null,
+              starts_at,
+              ends_at,
+              locked: true,
+              dismissed: false,
+              created_at: starts_at,
+              updated_at: starts_at,
+            },
+          ]),
+        );
+        try {
+          const saved = await db.createTaskBlock({
+            user_id: userId,
+            task_id: subject.task.id,
+            starts_at,
+            ends_at,
+          });
+          setPlanBlocks((prev) =>
+            inOrder(prev.map((b) => (b.id === temp ? saved : b))),
+          );
+        } catch (err) {
+          setPlanBlocks(previous);
+          toast(err instanceof Error ? err.message : "Could not place that", "error");
+        }
         return;
       }
       // A lecture dragged back out of the rail is un-dismissed by the same
-      // gesture that placed it. Two steps would mean restoring it and then
-      // being told it is somewhere you did not put it.
-      if (subject.block.dismissed) await db.setDismissed(subject.block.id, false);
+      // gesture that placed it — commitMove has already cleared the flag on
+      // screen. Two steps would mean restoring it and then being told it is
+      // somewhere you did not put it.
+      const restoring = subject.block.dismissed;
       await commitMove(subject.block, start, subject.minutes);
+      if (restoring) await db.setDismissed(subject.block.id, false);
     } catch (err) {
       toast(err instanceof Error ? err.message : "Could not place that", "error");
     }
@@ -374,13 +469,28 @@ export default function WeekPage({
               : "No plan yet. Press Plan the week and the deadlines below get hours."}
           </p>
         </div>
-        <button onClick={() => void regenerate()} disabled={generating}>
-          {generating
-            ? "Planning…"
-            : onBoard.some((b) => b.task_id)
-              ? "Replan"
-              : "Plan the week"}
-        </button>
+        <div className="row week-actions">
+          {/* Secondary, and only offered when there is a calendar to be out of
+              step with. A reset button on a feature you have not connected is
+              a button that can only disappoint. */}
+          {calendarGranted !== false && (
+            <button
+              className="btn-quiet"
+              onClick={() => void resync()}
+              disabled={resyncing}
+              title="Discard local moves and skips, and take Google's times again"
+            >
+              {resyncing ? "Syncing…" : "Resync calendar"}
+            </button>
+          )}
+          <button onClick={() => void regenerate()} disabled={generating}>
+            {generating
+              ? "Planning…"
+              : onBoard.some((b) => b.task_id)
+                ? "Replan"
+                : "Plan the week"}
+          </button>
+        </div>
       </div>
 
       {/* Said once, quietly, and only when it is true. The planner works
@@ -407,7 +517,7 @@ export default function WeekPage({
       >
         <div className="week">
           {days.map((day, i) => (
-            <DayColumn key={day.getTime()} day={day} windows={studyWindows}>
+            <DayColumn key={day.getTime()} day={day}>
               {blocksByDay[i].length === 0 ? (
                 <ul className="list blocks">
                   <DropSlot id={`tail:${i}`} className="slot-empty">
@@ -467,13 +577,25 @@ export default function WeekPage({
         </DragOverlay>
       </DndContext>
 
-      <HoursPanel store={store} events={busy} />
       <RoutinesPanel store={store} />
     </div>
   );
 }
 
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Blocks in clock order.
+ *
+ * The columns render whatever order the array is in — the loading query sorts
+ * by starts_at, and an optimistic edit has to keep that promise itself or a
+ * card lands visually last in a day it belongs in the middle of.
+ */
+function inOrder(blocks: PlanBlock[]): PlanBlock[] {
+  return [...blocks].sort(
+    (a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at),
+  );
+}
 
 /**
  * How long a task claims when it is dragged onto a day.
@@ -483,7 +605,7 @@ export default function WeekPage({
  * in the rail, visible, where Replan can find hours for it.
  */
 function sitting(minutes: number): number {
-  return Math.max(15, Math.min(minutes, MAX_SESSION_MINUTES));
+  return Math.min(snapMinutes(minutes), MAX_SESSION_MINUTES);
 }
 
 /** `gap:3:2` / `card:3:2` / `tail:3` → which column, and which position in it. */
@@ -535,42 +657,17 @@ function DropSlot({
   );
 }
 
-function DayColumn({
-  day,
-  windows,
-  children,
-}: {
-  day: Date;
-  windows: StudyWindow[];
-  children: React.ReactNode;
-}) {
+function DayColumn({ day, children }: { day: Date; children: React.ReactNode }) {
   const today = isSameDay(day, new Date());
-  // The hours are the rule this whole column obeys, so the column says them.
-  // Someone who has just dragged a block into a gap the planner will never use
-  // deserves to know why nothing ever joins it there.
-  const hours = useMemo(() => hoursLabel(day, windows), [day, windows]);
-
   return (
     <section className={`column day${today ? " today" : ""}`}>
       <h2>
         {day.toLocaleDateString(undefined, { weekday: "short" })}
         <span className="count">{day.getDate()}</span>
       </h2>
-      <p className="muted small day-hours">{hours}</p>
       {children}
     </section>
   );
-}
-
-function hoursLabel(day: Date, windows: StudyWindow[]): string {
-  const mine = windows.filter(
-    (w) => w.active && (w.weekday === null || w.weekday === day.getDay()),
-  );
-  if (!mine.length) return "8 am – 10 pm";
-  return [...mine]
-    .sort((a, b) => a.starts_minute - b.starts_minute)
-    .map((w) => `${clockOfMinutes(w.starts_minute)}–${clockOfMinutes(w.ends_minute)}`)
-    .join(", ");
 }
 
 /**
@@ -627,13 +724,28 @@ function BlockCard({
           setNodeRef(node);
           setDropRef(node);
         }}
+        {...(fixed ? {} : listeners)}
+        {...(fixed ? {} : attributes)}
         className={`card block ${hue}${isDragging ? " dragging" : ""}${
           routine ? " routine" : ""
         }${event ? " event" : ""}${block.locked ? " locked" : ""}${
           past ? " past" : ""
         }${isOver ? " slot-over" : ""}`}
       >
-        <div className="row block-time">
+        {/*
+          The controls opt out of the drag rather than the card opting in.
+
+          The handle used to be the title alone, which meant most of the card
+          was inert and you had to find the one line that moved it. Now the
+          card drags from anywhere and the two things that are not a drag —
+          the clock and the buttons — stop the gesture before it starts. The
+          five-pixel activation distance already lets an ordinary click
+          through; this covers the click that wanders.
+        */}
+        <div
+          className="row block-time"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
           {/*
             The time is the control.
 
@@ -655,21 +767,15 @@ function BlockCard({
           )}
         </div>
 
-        {/* The drag handle is the title, not the whole card. The time beneath
-            it is a button now, and a card that dragged from everywhere would
-            swallow the click that opens it. */}
-        <span
-          className={`block-title${fixed ? "" : " grabbable"}`}
-          {...(fixed ? {} : listeners)}
-          {...(fixed ? {} : attributes)}
-        >
-          {title}
-        </span>
+        <span className="block-title">{title}</span>
 
         {routine ? (
           <span className="muted small">Routine</span>
         ) : (
-          <div className="row block-actions">
+          <div
+            className="row block-actions"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             {event ? (
               <span className="muted small">Calendar</span>
             ) : klass ? (

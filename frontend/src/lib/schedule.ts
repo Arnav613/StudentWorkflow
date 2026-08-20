@@ -15,23 +15,39 @@
  * Hence `unplaced`: what does not fit comes back and gets shown.
  */
 
-import type { PlanBlock, Routine, StudyWindow, Task } from "./types";
+import type { PlanBlock, Routine, Task } from "./types";
 
-/**
- * The hours assumed when a person has defined no study windows of their own.
- *
- * A fallback, not a default anybody chose — which is exactly what the old
- * hardcoded pair was, except that one could not be overridden. The moment a
- * single window exists, this is never consulted again.
- */
+/** Waking hours the planner is allowed to fill. Outside these it plans nothing. */
 export const DAY_START_HOUR = 8;
 export const DAY_END_HOUR = 22;
 
-/** Minutes past midnight, for a day with nothing said about it. */
-export const FALLBACK_WINDOW = {
-  starts_minute: DAY_START_HOUR * 60,
-  ends_minute: DAY_END_HOUR * 60,
-};
+/**
+ * The grid every planned block lands on.
+ *
+ * A scheduler working to the minute produces a week of 5:18pm starts — each
+ * one technically the earliest free moment, and all of them unreadable. Nobody
+ * thinks in eighteens. Sessions begin on the half hour and last a whole number
+ * of them, which costs a few minutes of theoretical packing efficiency and
+ * buys a plan that can be held in your head.
+ */
+export const SLOT_MINUTES = 30;
+
+/** Up to the next half hour. Used for starts: never earlier than allowed. */
+export function snapUp(ms: number): number {
+  const slot = SLOT_MINUTES * MINUTE;
+  return Math.ceil(ms / slot) * slot;
+}
+
+/** To the closest half hour. Used where a person aimed, not where time began. */
+export function snapNearest(ms: number): number {
+  const slot = SLOT_MINUTES * MINUTE;
+  return Math.round(ms / slot) * slot;
+}
+
+/** Minutes, to a whole number of half hours, never down to nothing. */
+export function snapMinutes(minutes: number): number {
+  return Math.max(SLOT_MINUTES, Math.round(minutes / SLOT_MINUTES) * SLOT_MINUTES);
+}
 
 /**
  * The longest single sitting, and the break that follows one.
@@ -45,12 +61,12 @@ export const MAX_SESSION_MINUTES = 90;
 export const BREAK_MINUTES = 15;
 
 /**
- * Below this, a gap is not worth planning into. Twenty minutes between a
- * lecture and a rehearsal is a walk across campus, not a study session.
+ * The rounding floor beneath which a leftover is noise rather than work.
  *
- * The exception is a task with less than this left to do: fifteen minutes of
- * reading does fit in a fifteen-minute gap, and refusing to place it would
- * report it as unplaced while free time sat next to it.
+ * The planner's real minimum sitting is one slot — see SLOT_MINUTES — since
+ * everything it places lands on the half hour. This is only used to decide
+ * when a few unaccounted minutes are worth calling unplanned, and a quarter of
+ * it is well inside anybody's rounding error.
  */
 export const MIN_SESSION_MINUTES = 20;
 
@@ -95,12 +111,6 @@ export type PlanInput = {
   busy: BusyInterval[];
   /** Blocks a person placed by hand. Immovable, and planned around. */
   locked: PlanBlock[];
-  /**
-   * The hours work may be placed in. Empty means "nothing has been said", and
-   * the fallback window stands in — never "no hours", which would plan an
-   * empty week and look like the button was broken.
-   */
-  windows?: StudyWindow[];
   /** The instant the plan starts. Nothing is ever scheduled before it. */
   from: Date;
   days?: number;
@@ -222,47 +232,6 @@ function carve(window: Interval, occupied: Interval[]): Interval[] {
   return out;
 }
 
-/* ---------------------------------------------------------------------------
-   Study windows — the hours a person is willing to work in
-   ------------------------------------------------------------------------ */
-
-/**
- * The windows that apply to one day, as absolute instants, merged and sorted.
- *
- * Merged rather than kept apart because two windows that touch or overlap are
- * one stretch of available time, and leaving them separate would make the
- * planner refuse to run a session across the seam — 11:30 to 12:00 and 12:00
- * to 14:00 would cap a sitting at thirty minutes for no reason a person could
- * see.
- *
- * A day-specific window does not *replace* the every-day ones, it adds to
- * them. Overriding would need a rule for what "override" means when they only
- * partly overlap, and every such rule surprises somebody; adding is the one
- * behaviour that is obvious from the list on screen.
- */
-export function dayWindows(day: Date, windows: StudyWindow[]): Interval[] {
-  const mine = windows.filter(
-    (w) => w.active && (w.weekday === null || w.weekday === day.getDay()),
-  );
-  const ranges = (mine.length ? mine : [FALLBACK_WINDOW])
-    .map((w) => ({ start: at(day, w.starts_minute), end: at(day, w.ends_minute) }))
-    .sort((a, b) => a.start - b.start);
-
-  const out: Interval[] = [];
-  for (const r of ranges) {
-    const last = out[out.length - 1];
-    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
-    else out.push({ ...r });
-  }
-  return out;
-}
-
-/** The outer edges of a day's study time — used to bound a hand-dropped block. */
-export function dayBounds(day: Date, windows: StudyWindow[]): Interval {
-  const w = dayWindows(day, windows);
-  return { start: w[0].start, end: w[w.length - 1].end };
-}
-
 /**
  * Where a block dropped between two neighbours should actually start.
  *
@@ -285,7 +254,6 @@ export function timeForSlot({
   day,
   after,
   minutes,
-  windows,
 }: {
   day: Date;
   /**
@@ -297,20 +265,20 @@ export function timeForSlot({
    */
   after: { ends_at: string } | null;
   minutes: number;
-  windows: StudyWindow[];
 }): Date {
-  const bounds = dayBounds(day, windows);
-  // The top of the gap. A block dropped into a two-hour hole starts at the
-  // beginning of it rather than floating in the middle, so the leftover time
-  // stays contiguous and the planner can still use it.
-  const lower = after ? Date.parse(after.ends_at) : bounds.start;
+  // The top of the gap, on the half hour. A block dropped into a two-hour hole
+  // starts at the beginning of it rather than floating in the middle, so the
+  // leftover time stays contiguous and the planner can still use it.
+  const lower = after
+    ? snapUp(Date.parse(after.ends_at))
+    : at(day, DAY_START_HOUR * 60);
 
   // Pulled back only to keep the block inside the day it was dropped on. A gap
   // that is merely tight is left overlapping: refusing a deliberate drop would
   // be the app arguing with you, and a double-booked hour you created on
   // purpose is information.
   const dayEnd = at(day, 24 * 60);
-  const start = Math.min(lower, dayEnd - minutes * MINUTE);
+  const start = Math.min(lower, snapNearest(dayEnd - minutes * MINUTE));
   return new Date(Math.max(start, at(day, 0)));
 }
 
@@ -338,14 +306,13 @@ export function planWeek({
   routines,
   busy,
   locked,
-  windows: studyWindows = [],
   from,
   days = 7,
   medians,
 }: PlanInput): Plan {
   const horizon = planDays(from, days);
   const floor = from.getTime();
-  const ceiling = at(addDays(horizon[0], days - 1), 24 * 60);
+  const ceiling = at(addDays(horizon[0], days - 1), DAY_END_HOUR * 60);
 
   const blocks: PlannedBlock[] = [];
   const occupied: Interval[] = [];
@@ -406,20 +373,12 @@ export function planWeek({
 
   occupied.sort((a, b) => a.start - b.start);
 
-  /*
-   * Free time is now what is left of the *chosen* hours, rather than what is
-   * left of a day someone else picked. The carve is unchanged and is where
-   * "study blocks form around your classes" actually happens: a 9am lecture
-   * inside a 8–12 window leaves 8–9 and 10–12, with no special case for
-   * lectures anywhere in this function.
-   */
   const windows: Interval[] = [];
   for (const day of horizon) {
-    for (const w of dayWindows(day, studyWindows)) {
-      const open = Math.max(w.start, floor);
-      if (w.end <= open) continue;
-      windows.push(...carve({ start: open, end: w.end }, occupied));
-    }
+    const open = Math.max(at(day, DAY_START_HOUR * 60), floor);
+    const close = at(day, DAY_END_HOUR * 60);
+    if (close <= open) continue;
+    windows.push(...carve({ start: open, end: close }, occupied));
   }
   windows.sort((a, b) => a.start - b.start);
 
@@ -471,13 +430,30 @@ export function planWeek({
         continue;
       }
 
-      const available = (limit - w.start) / MINUTE;
-      const want = Math.min(remaining, MAX_SESSION_MINUTES);
-      // A short gap is only worth using if it finishes the job.
-      if (available < Math.min(MIN_SESSION_MINUTES, remaining)) continue;
+      /*
+       * Every session starts on the half hour and lasts a whole number of
+       * them.
+       *
+       * Snapping the start forward can cost a few minutes off the front of a
+       * window — the gap between a lecture ending at 10:50 and the next clean
+       * slot at 11:00 is not a study session anyway, and the alternative was a
+       * week of 10:50 and 5:18 starts that read as noise. The length rounds to
+       * the nearest half hour rather than up, so an estimate is never quietly
+       * inflated past what was typed.
+       */
+      const start = snapUp(w.start);
+      if (start >= limit) continue;
 
-      const length = Math.min(want, available);
-      const start = w.start;
+      // Both ends on the grid, not just the start: a block running 9:00 to
+      // 10:50 because that is when the lecture begins is the same unreadable
+      // number in the other corner of the card.
+      const room =
+        Math.floor((limit - start) / MINUTE / SLOT_MINUTES) * SLOT_MINUTES;
+      // A gap below one slot is a walk across campus, not a study session.
+      if (room < SLOT_MINUTES) continue;
+
+      const want = Math.min(remaining, MAX_SESSION_MINUTES);
+      const length = Math.min(snapMinutes(want), room);
       const end = start + length * MINUTE;
 
       blocks.push({

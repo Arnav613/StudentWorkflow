@@ -1,7 +1,7 @@
 import { useState } from "react";
 import * as db from "../lib/db";
 import { toast, undoable } from "../lib/toast";
-import { formatMinutes } from "../lib/schedule";
+import { clockOf, formatMinutes } from "../lib/schedule";
 import TimePicker from "./TimePicker";
 import type { DataStore } from "../hooks/useData";
 import type { Routine } from "../lib/types";
@@ -18,6 +18,32 @@ const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Frid
 
 /** Daily is the default. Most routines that are worth entering are daily. */
 const EVERY_DAY = "";
+
+/**
+ * The routines almost everybody has, one press each.
+ *
+ * An empty panel with three fields asks you to invent both the answer and the
+ * format of the answer, which is why the honest response to it is to close the
+ * tab and let the planner keep believing your evenings are free. These are not
+ * defaults imposed on anyone — nothing exists until it is pressed — they are
+ * the first draft, and every part of it is editable afterwards.
+ *
+ * The times are the ones these things actually happen at rather than round
+ * numbers: gym after the working day, dinner at seven, a commute against the
+ * morning.
+ */
+const PRESETS: { title: string; time_of_day: string; duration_minutes: number }[] = [
+  { title: "Gym", time_of_day: "17:00", duration_minutes: 60 },
+  { title: "Dinner", time_of_day: "19:00", duration_minutes: 60 },
+  { title: "Commute", time_of_day: "08:30", duration_minutes: 30 },
+  { title: "Wind down", time_of_day: "23:00", duration_minutes: 60 },
+];
+
+/** "17:00" → [17, 0], for the one place a preset has to become a clock. */
+function timeParts(hhmm: string): [number, number] {
+  const [h, m] = hhmm.split(":").map(Number);
+  return [h, m];
+}
 
 export default function RoutinesPanel({ store }: { store: DataStore }) {
   const { routines, refresh, setRoutines, userId } = store;
@@ -78,6 +104,31 @@ export default function RoutinesPanel({ store }: { store: DataStore }) {
     });
   }
 
+  /** A preset, added as it stands. Everything about it is editable after. */
+  async function quickAdd(p: (typeof PRESETS)[number]) {
+    setBusy(true);
+    try {
+      await db.createRoutine({
+        user_id: userId,
+        title: p.title,
+        weekday: null,
+        time_of_day: p.time_of_day,
+        duration_minutes: p.duration_minutes,
+      });
+      await refresh();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not add that", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Only the ones you have not got. A press that appears to do nothing because
+  // the routine already exists is worse than no button.
+  const offered = PRESETS.filter(
+    (p) => !routines.some((r) => r.title.toLowerCase() === p.title.toLowerCase()),
+  );
+
   return (
     <section className="panel">
       <div className="panel-head">
@@ -86,6 +137,23 @@ export default function RoutinesPanel({ store }: { store: DataStore }) {
           Time that is already spoken for. Never lands on the board.
         </span>
       </div>
+
+      {offered.length > 0 && (
+        <div className="row routine-presets">
+          {offered.map((p) => (
+            <button
+              key={p.title}
+              type="button"
+              className="tag tag-button"
+              disabled={busy}
+              onClick={() => void quickAdd(p)}
+              title={`Every day, ${formatMinutes(p.duration_minutes)}`}
+            >
+              + {p.title} {clockOf(new Date(2000, 0, 1, ...timeParts(p.time_of_day)))}
+            </button>
+          ))}
+        </div>
+      )}
 
       <form className="routine-form" onSubmit={add}>
         <input

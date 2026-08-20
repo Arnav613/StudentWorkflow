@@ -174,26 +174,3 @@ export type PlanBlock = {
   created_at: string;
   updated_at: string;
 };
-
-/**
- * An hour range you are willing to work in, on one weekday or on all of them.
- *
- * These replace the flat 8am–10pm the planner used to assume. A day is not one
- * long window — it is a morning that ends when the lectures do, an afternoon,
- * and a late block, with gaps between them that are dinner and not study time.
- * Planning into those gaps is how a plan stops describing anybody's day.
- *
- * Minutes past local midnight, so the planner never parses anything, and so a
- * 9pm block stays at 9pm when the clocks change. `ends_minute` may be 1440:
- * "nine until midnight" is a real answer.
- */
-export type StudyWindow = {
-  id: string;
-  user_id: string;
-  weekday: number | null;
-  starts_minute: number;
-  ends_minute: number;
-  active: boolean;
-  created_at: string;
-  updated_at: string;
-};

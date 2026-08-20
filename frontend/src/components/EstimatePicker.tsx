@@ -122,7 +122,13 @@ export default function EstimatePicker({
         >
           {/* Clearing belongs in the list, like the time field: going back to
               unestimated is a choice among answers — "I would rather the
-              planner guess" — not a removal. */}
+              planner guess" — not a removal.
+
+              It used to say so in grey beside the row, as did "Split across
+              sittings" on anything over 90 minutes. Both were true and neither
+              was asked for: a list you pick a number off had a column of
+              commentary explaining the scheduler to someone who only wanted to
+              say two hours. */}
           <button
             type="button"
             role="option"
@@ -131,7 +137,6 @@ export default function EstimatePicker({
             onClick={() => choose(null)}
           >
             <span className="grow">Not estimated</span>
-            <span className="muted small">Planner guesses</span>
           </button>
 
           {slots.map((slot) => (
@@ -144,9 +149,6 @@ export default function EstimatePicker({
               onClick={() => choose(slot)}
             >
               <span className="grow">{formatMinutes(slot)}</span>
-              {/* The planner splits above this, and knowing that before you
-                  choose is what stops 3h reading as one unbroken evening. */}
-              {slot > 90 && <span className="muted small">Split across sittings</span>}
             </button>
           ))}
         </div>

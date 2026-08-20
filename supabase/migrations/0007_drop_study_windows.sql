@@ -1,0 +1,17 @@
+-- 0007_drop_study_windows.sql — the hours editor comes back out.
+--
+-- 0006 added `study_windows` so the planner would work inside hours a person
+-- chose rather than a hardcoded 8am–10pm. The reasoning was sound and the
+-- thing itself was tedious: describing your week as a list of ranges, per
+-- weekday, before the planner will do anything useful is a form standing in
+-- front of a button — and a form you have to keep in step with a timetable
+-- that changes every term.
+--
+-- The planner is back on waking hours, which are a worse model of anybody's
+-- day and require nothing of them. Routines remain the way to say an hour is
+-- gone, one line at a time, at the moment you notice it — which is when
+-- anybody was ever going to say it.
+--
+-- Dropped rather than left standing. An unused table with RLS, an index and a
+-- trigger on it is a thing the next person has to work out is dead.
+drop table if exists study_windows;

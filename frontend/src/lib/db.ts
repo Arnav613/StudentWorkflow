@@ -21,7 +21,6 @@ import type {
   HealthTask,
   PlanBlock,
   Routine,
-  StudyWindow,
   Task,
   TaskStatus,
 } from "./types";
@@ -662,56 +661,46 @@ export async function syncCalendar(
   return changed;
 }
 
-// ---------------------------------------------------------------------------
-// Study windows — the hours you are willing to work in
-// ---------------------------------------------------------------------------
+/**
+ * Throw away the local copy of the calendar and take Google's again.
+ *
+ * The ordinary sync deliberately preserves two things it finds locally: a
+ * lecture you moved keeps your time, a lecture you dropped stays dropped.
+ * That is right almost always and wrong exactly once — when the local copy has
+ * drifted far enough from the real timetable that you would rather start over
+ * than repair it block by block.
+ *
+ * So this is the one destructive path, and it is a button a person presses
+ * rather than anything that happens on its own. Delete every mirrored event in
+ * the horizon, insert what Google says now. Blocks for tasks and routines are
+ * untouched — this resets the mirror, not the plan.
+ */
+export async function resyncCalendar(
+  userId: string,
+  events: MirrorEvent[],
+  from: Date,
+  to: Date,
+): Promise<void> {
+  const { error: delError } = await supabase
+    .from("plan_blocks")
+    .delete()
+    .not("google_event_id", "is", null)
+    .gte("ends_at", from.toISOString())
+    .lte("starts_at", to.toISOString());
+  if (delError) throw delError;
 
-export async function listStudyWindows(): Promise<StudyWindow[]> {
-  return unwrap(
-    await supabase
-      .from("study_windows")
-      .select("*")
-      .order("weekday", { nullsFirst: true })
-      .order("starts_minute"),
+  if (!events.length) return;
+
+  const { error } = await supabase.from("plan_blocks").insert(
+    events.map((e) => ({
+      user_id: userId,
+      google_event_id: e.id,
+      title: e.title,
+      starts_at: e.starts_at,
+      ends_at: e.ends_at,
+      locked: false,
+      dismissed: false,
+    })),
   );
-}
-
-export async function createStudyWindow(input: {
-  user_id: string;
-  weekday: number | null;
-  starts_minute: number;
-  ends_minute: number;
-}): Promise<StudyWindow> {
-  return unwrap(
-    await supabase.from("study_windows").insert(input).select().single(),
-  );
-}
-
-export async function updateStudyWindow(
-  id: string,
-  patch: Partial<
-    Pick<StudyWindow, "weekday" | "starts_minute" | "ends_minute" | "active">
-  >,
-): Promise<StudyWindow> {
-  return unwrap(
-    await supabase.from("study_windows").update(patch).eq("id", id).select().single(),
-  );
-}
-
-export async function deleteStudyWindow(id: string): Promise<void> {
-  const { error } = await supabase.from("study_windows").delete().eq("id", id);
   if (error) throw error;
-}
-
-/** Used when seeding a whole weekday at once from the calendar. */
-export async function createStudyWindows(
-  rows: {
-    user_id: string;
-    weekday: number | null;
-    starts_minute: number;
-    ends_minute: number;
-  }[],
-): Promise<StudyWindow[]> {
-  if (!rows.length) return [];
-  return unwrap(await supabase.from("study_windows").insert(rows).select());
 }
