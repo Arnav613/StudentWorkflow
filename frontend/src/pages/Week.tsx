@@ -20,7 +20,6 @@ import { errorText, toast } from "../lib/toast";
 import { formatDue } from "../lib/board";
 import {
   MAX_SESSION_MINUTES,
-  addDays,
   blockMinutes,
   byDay,
   classMedians,
@@ -129,11 +128,14 @@ export default function WeekPage({
       }
 
       try {
+        // The far edge is now-plus-seven, matching what routers/calendar.py
+        // asks Google for. Passing midnight-plus-seven instead left a sliver
+        // of a day that Google reported on and the sweep did not cover.
         const changed = await db.syncCalendar(
           userId,
           events,
           planFrom,
-          addDays(planFrom, DAYS),
+          new Date(Date.now() + DAYS * 24 * 60 * 60_000),
         );
         if (changed && live) await refresh();
       } catch (e) {
@@ -242,7 +244,7 @@ export default function WeekPage({
         toast("No calendar access to sync with", "info");
         return;
       }
-      await db.resyncCalendar(userId, res.events, planFrom, addDays(planFrom, DAYS));
+      await db.resyncCalendar(userId, res.events, planFrom);
       await refresh();
       toast("Calendar back in step with Google", "success");
     } catch (e) {

@@ -591,22 +591,37 @@ export async function syncCalendar(
   userId: string,
   events: MirrorEvent[],
   from: Date,
+  /**
+   * The far edge of the window Google was actually asked about.
+   *
+   * Used only to bound the cancelled-lecture sweep, never the identity
+   * lookup. Getting those two the same way round is what caused
+   * plan_blocks_event_idx to blow up: the mirror was searched over
+   * midnight-to-midnight while the backend asks Google for now-to-now-plus-
+   * seven, so every event in the sliver between the two came back looking
+   * brand new, got inserted, and collided with the row already holding it.
+   */
   to: Date,
 ): Promise<boolean> {
+  // No upper bound. A lecture is the same lecture wherever it now sits — you
+  // may have dragged it clean out of any window this query could guess at —
+  // and an identity lookup that can miss is an identity lookup that duplicates.
   const existing: PlanBlock[] = unwrap(
     await supabase
       .from("plan_blocks")
       .select("*")
       .not("google_event_id", "is", null)
-      .gte("ends_at", from.toISOString())
-      .lte("starts_at", to.toISOString()),
+      .gte("ends_at", from.toISOString()),
   );
 
   const byEvent = new Map(existing.map((b) => [b.google_event_id as string, b]));
-  const seen = new Set(events.map((e) => e.id));
+  // Google can hand back the same id twice across a page boundary when a
+  // recurrence is edited mid-fetch. One row per id, always.
+  const incoming = [...new Map(events.map((e) => [e.id, e])).values()];
+  const seen = new Set(incoming.map((e) => e.id));
   let changed = false;
 
-  const fresh = events
+  const fresh = incoming
     .filter((e) => !byEvent.has(e.id))
     .map((e) => ({
       user_id: userId,
@@ -619,15 +634,24 @@ export async function syncCalendar(
     }));
 
   if (fresh.length) {
+    /*
+     * A plain insert, with one error forgiven by code.
+     *
+     * Not an upsert: plan_blocks_event_idx is a *partial* index, and Postgres
+     * will not reliably infer a partial index as the arbiter for an explicit
+     * ON CONFLICT target — the fix would fail exactly where the bug was.
+     *
+     * 23505 is unique_violation, and here it can only mean another tab
+     * mirrored the same lecture a moment ago. The row it collided with is the
+     * row this one wanted. Matched on the code rather than on the text of the
+     * message, which is a sentence Postgres is free to reword.
+     */
     const { error } = await supabase.from("plan_blocks").insert(fresh);
-    // A duplicate here is two tabs syncing the same lecture at once, which the
-    // unique index correctly refuses. It is not worth surfacing: the row it
-    // collided with is the row we wanted.
-    if (error && !`${error.message}`.includes("duplicate")) throw error;
+    if (error && error.code !== "23505") throw error;
     changed = true;
   }
 
-  for (const event of events) {
+  for (const event of incoming) {
     const block = byEvent.get(event.id);
     if (!block) continue;
     const patch: Record<string, string> = {};
@@ -646,9 +670,19 @@ export async function syncCalendar(
     changed = true;
   }
 
-  // Gone from Google means cancelled. Dropping the local row is right even for
-  // a dismissed one — you cannot skip a lecture that is not happening.
-  const stale = existing.filter((b) => !seen.has(b.google_event_id as string));
+  /*
+   * Gone from Google means cancelled. Dropping the local row is right even for
+   * a dismissed one — you cannot skip a lecture that is not happening.
+   *
+   * Bounded by the window we asked about, unlike the lookup above: a lecture
+   * three weeks out did not come back because nobody asked, and deleting it on
+   * that basis would empty the mirror one horizon at a time.
+   */
+  const horizon = to.getTime();
+  const stale = existing.filter(
+    (b) =>
+      !seen.has(b.google_event_id as string) && Date.parse(b.starts_at) <= horizon,
+  );
   if (stale.length) {
     const { error } = await supabase
       .from("plan_blocks")
@@ -679,20 +713,23 @@ export async function resyncCalendar(
   userId: string,
   events: MirrorEvent[],
   from: Date,
-  to: Date,
 ): Promise<void> {
+  // Every mirrored event from `from` onward, with no upper bound — including
+  // any you dragged past whatever edge a bounded delete would have used. This
+  // is the statement "the local calendar is wrong, take Google's", and half of
+  // it left standing is how the insert below hit plan_blocks_event_idx.
   const { error: delError } = await supabase
     .from("plan_blocks")
     .delete()
     .not("google_event_id", "is", null)
-    .gte("ends_at", from.toISOString())
-    .lte("starts_at", to.toISOString());
+    .gte("ends_at", from.toISOString());
   if (delError) throw delError;
 
-  if (!events.length) return;
+  const incoming = [...new Map(events.map((e) => [e.id, e])).values()];
+  if (!incoming.length) return;
 
   const { error } = await supabase.from("plan_blocks").insert(
-    events.map((e) => ({
+    incoming.map((e) => ({
       user_id: userId,
       google_event_id: e.id,
       title: e.title,
