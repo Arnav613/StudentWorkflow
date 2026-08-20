@@ -2313,6 +2313,176 @@ button.link.danger:hover:not(:disabled) {
   width: 5rem;
 }
 
+/* ---- Dropping ----------------------------------------------------------- */
+
+/*
+ * The gaps between cards, which are where a block is now actually aimed.
+ *
+ * A hairline at rest and a real target mid-drag. Dropping used to mean "this
+ * column", and the app then kept the block's old clock — so an 8am session
+ * dragged to the foot of Thursday snapped back to the top of it. These say
+ * *between these two*, and the time follows from that.
+ *
+ * They cannot be a permanent gutter: seven columns with a visible lane between
+ * every pair of cards would spend more height on lanes than on work.
+ */
+.drop-slot {
+  list-style: none;
+  height: 0.25rem;
+  margin: -0.1rem 0;
+  border-radius: var(--r-pill);
+  transition: height 90ms ease, background-color 90ms ease;
+}
+
+.drop-slot.over {
+  height: 1.6rem;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* The rest of the column below the last card: "after everything else today". */
+.slot-tail {
+  height: 1.4rem;
+  margin-bottom: -0.6rem;
+}
+
+/* An empty day is one big target, and says the word it always said. */
+.slot-empty {
+  height: auto;
+  min-height: 3rem;
+  display: flex;
+  align-items: center;
+  padding: 0.4rem 0.15rem;
+  margin: 0;
+}
+
+.slot-empty.over {
+  height: auto;
+}
+
+/* A card is a target too, meaning "take this one's place, push it down". The
+   thin gaps alone would be a game of darts in a nine-rem column. */
+.list > li.card.block.slot-over {
+  border-color: var(--accent);
+  box-shadow: inset 0 2px 0 -1px var(--accent);
+}
+
+/* An hour that has gone by. Dimmed rather than hidden: the column would
+   otherwise start mid-afternoon and today would look like it never happened.
+   If the work in it is not done, the task is already back in the rail. */
+.list > li.card.block.past {
+  opacity: 0.55;
+}
+
+/* ---- The unplanned rail, as a place to drop things ---------------------- */
+
+.unplanned-rail {
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.unplanned-rail.over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+}
+
+/*
+ * Rail items drag now, which is the whole point of the rail: it used to be a
+ * read-only list of complaints, and the only way to act on one was the Plan
+ * button — a control that rewrote the entire week to move a single reading.
+ */
+.rail-item {
+  cursor: grab;
+  border-radius: var(--r-sm, 5px);
+  padding-left: 0.35rem;
+  padding-right: 0.35rem;
+}
+
+.rail-item:active {
+  cursor: grabbing;
+}
+
+.rail-item:hover {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.rail-item.dragging {
+  opacity: 0.4;
+}
+
+/* ---- The one question worth interrupting for ---------------------------- */
+
+/*
+ * "…and every Tuesday?"
+ *
+ * This was a strip inside the card first, which was the wrong room for it:
+ * three choices, each a phrase rather than a word, wrapping across a card nine
+ * rem wide and shoving the rest of the column down while it was open. A
+ * question worth asking is worth the middle of the screen — and this is the
+ * only question in the app that has to be asked at all, because its three
+ * answers are all reasonable and getting it wrong silently changes every
+ * Tuesday for the rest of term.
+ */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: color-mix(in srgb, #000 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.dialog {
+  width: min(24rem, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+/*
+ * Stacked, not in a row. Three buttons side by side get read as a severity
+ * scale and the widest one is pressed by muscle memory; stacked, each is a
+ * sentence you have to arrive at. Narrowest first, because it is both the
+ * commonest answer and the one that undoes least if it is wrong.
+ */
+.dialog-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.dialog-choices button {
+  width: 100%;
+  text-align: left;
+}
+
+/* The widest answer to a removal deletes the routine, and says so in the one
+   colour this app reserves for that. */
+.dialog-choices button.danger {
+  background: var(--error);
+  color: #fff;
+  border-color: transparent;
+}
+
+.dialog-cancel {
+  align-self: flex-start;
+  padding-left: 0;
+}
+
 /*
  * Seven columns need a wide screen and gracefully become a scrolling strip
  * rather than seven unreadable slivers. Below that, one column per day

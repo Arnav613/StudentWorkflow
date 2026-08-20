@@ -22,6 +22,7 @@ import type {
   PlanBlock,
   Routine,
   RoutineOverride,
+  RoutineSkip,
   Task,
   TaskStatus,
 } from "./types";
@@ -752,12 +753,18 @@ export async function listRoutineOverrides(): Promise<RoutineOverride[]> {
   return unwrap(await supabase.from("routine_overrides").select("*"));
 }
 
-/** One weekday of one routine, at its own time. Upserted: one rule per day. */
+/**
+ * One weekday of one routine, at its own time — or not at all.
+ *
+ * Upserted: one rule per weekday, because two would be a coin toss over which
+ * time Tuesday gets.
+ */
 export async function setRoutineOverride(input: {
   user_id: string;
   routine_id: string;
   weekday: number;
-  time_of_day: string;
+  time_of_day?: string | null;
+  skipped?: boolean;
 }): Promise<RoutineOverride> {
   return unwrap(
     await supabase
@@ -795,10 +802,27 @@ export async function clearRoutineOverrides(routineId: string): Promise<void> {
  * Tuesday you dragged to six is the "just this once" answer, and regenerating
  * over the top of it would silently undo it.
  */
+export async function listRoutineSkips(): Promise<RoutineSkip[]> {
+  return unwrap(await supabase.from("routine_skips").select("*"));
+}
+
+/** One occurrence, not happening. Idempotent: skipping twice is still once. */
+export async function addRoutineSkip(input: {
+  user_id: string;
+  routine_id: string;
+  on_date: string;
+}): Promise<void> {
+  const { error } = await supabase
+    .from("routine_skips")
+    .upsert(input, { onConflict: "routine_id,on_date", ignoreDuplicates: true });
+  if (error) throw error;
+}
+
 export async function resyncRoutine(
   userId: string,
   routine: Routine,
   overrides: RoutineOverride[],
+  skips: RoutineSkip[],
   from: Date,
   days: number,
 ): Promise<PlanBlock[]> {
@@ -825,6 +849,11 @@ export async function resyncRoutine(
     from,
     days,
     pinned,
+    skipped: new Set(
+      skips
+        .filter((s) => s.routine_id === routine.id)
+        .map((s) => dayKey(new Date(`${s.on_date}T00:00:00`))),
+    ),
   });
   if (!fresh.length) return [];
 

@@ -272,6 +272,9 @@ export function routineTimeOn(
   if (!routine.active) return null;
   if (routine.weekday !== null && routine.weekday !== day.getDay()) return null;
   const override = overrides.get(`${routine.id}:${day.getDay()}`);
+  // "Never on a Tuesday" is as much an exception as "later on a Tuesday", and
+  // it is the one you need after skipping the gym twice running.
+  if (override?.skipped) return null;
   const start = at(day, minutesOfDay(override?.time_of_day ?? routine.time_of_day));
   return { start, end: start + routine.duration_minutes * MINUTE };
 }
@@ -291,18 +294,21 @@ export function routineBlocks({
   from,
   days,
   pinned = new Set<string>(),
+  skipped = new Set<string>(),
 }: {
   routine: Routine;
   overrides: Map<string, RoutineOverride>;
   from: Date;
   days: number;
   pinned?: Set<string>;
+  /** Dates this routine is not happening on, as dayKeys. */
+  skipped?: Set<string>;
 }): PlannedBlock[] {
   const out: PlannedBlock[] = [];
   const floor = from.getTime();
 
   for (const day of planDays(from, days)) {
-    if (pinned.has(dayKey(day))) continue;
+    if (pinned.has(dayKey(day)) || skipped.has(dayKey(day))) continue;
     const when = routineTimeOn(routine, day, overrides);
     // An hour that has already gone is not a commitment you can still keep, so
     // it neither renders nor blocks time.
@@ -327,51 +333,85 @@ export function dayKey(d: Date | string): string {
 /**
  * Where a block dropped between two neighbours should actually start.
  *
- * The rule the gesture implies, and the one it did not use to follow: a block
- * dropped into a gap starts *at that gap*, keeping its own length. Dragging an
- * 8am session to the end of Thursday used to keep 8am and snap back to the top
- * of the column — the app quietly overruling the only instruction the drag
- * carried.
+ * The rule is: it keeps its own time, and only a conflict moves it.
  *
- * It takes only as long as it already took. A two-hour gap does not turn a
- * forty-minute reading into a two-hour reading; the rest of the gap stays free
- * for the planner.
+ * Two earlier versions got this wrong in opposite directions. The first kept
+ * the clock and changed only the date, so a block dropped at the foot of
+ * Thursday snapped back to the top of the column. The second took the top of
+ * the gap always, so dragging a six o'clock session onto an empty Saturday
+ * made it eight in the morning — the app answering a question nobody asked.
+ * A drag across columns usually means "this, but on Saturday", and the time
+ * was never the part being changed.
  *
- * Overlap is permitted when the gap is genuinely too small. Refusing the drop
- * would be the app arguing with a deliberate act, and a double-booked hour you
- * created on purpose is information — one you were prevented from expressing
- * is not.
+ * So the dropped time is the block's own, moved to the new day, and it is
+ * overruled only where it will not fit:
+ *
+ *   - it runs into the block above  → it starts when that one ends
+ *   - it runs into the block below  → it is pulled back to end when that
+ *                                     one starts, but never above the block
+ *                                     above it
+ *   - it fits between them          → nothing happens to it at all
+ *
+ * A task dragged out of the Unplanned rail has no time of its own yet, so it
+ * takes the top of the gap. That is the one case where the app has to invent
+ * a number, and the top of the gap is the least surprising one available.
  */
 export function timeForSlot({
   day,
   after,
+  before,
   minutes,
+  current,
+  now = Date.now(),
 }: {
   day: Date;
-  /**
-   * The item the block was dropped below, if any. The gap it opens is the
-   * whole of the answer — the item *above* which the block was dropped is
-   * deliberately not consulted, because the block keeps its own length either
-   * way and shortening it to fit would silently rewrite an estimate, which is
-   * the one number on a card the app is not allowed to invent.
-   */
+  /** The item the block was dropped below, if any. */
   after: { ends_at: string } | null;
+  /** The item it was dropped above, if any. */
+  before: { starts_at: string } | null;
   minutes: number;
+  /** Where it is now. Null for something that has never been placed. */
+  current: Date | null;
+  now?: number;
 }): Date {
-  // The top of the gap, on the half hour. A block dropped into a two-hour hole
-  // starts at the beginning of it rather than floating in the middle, so the
-  // leftover time stays contiguous and the planner can still use it.
-  const lower = after
-    ? snapUp(Date.parse(after.ends_at))
-    : at(day, DAY_START_HOUR * 60);
+  const span = minutes * MINUTE;
 
-  // Pulled back only to keep the block inside the day it was dropped on. A gap
-  // that is merely tight is left overlapping: refusing a deliberate drop would
-  // be the app arguing with you, and a double-booked hour you created on
-  // purpose is information.
+  // The earliest this day will accept: after whatever it was dropped below,
+  // and never in an hour that has already gone.
+  const opensAt = Math.max(
+    at(day, DAY_START_HOUR * 60),
+    isSameDay(day, new Date(now)) ? snapUp(now) : 0,
+  );
+  const lower = after ? snapUp(Date.parse(after.ends_at)) : opensAt;
+  const upper = before ? Date.parse(before.starts_at) : at(day, 24 * 60);
+
+  // Its own clock, on the new day. This is the answer unless something is in
+  // the way of it.
+  const wanted = current
+    ? at(day, current.getHours() * 60 + current.getMinutes())
+    : null;
+
+  let start: number;
+  if (wanted === null) start = lower;
+  else if (wanted < lower) start = lower;
+  else if (wanted + span > upper) start = Math.max(lower, snapNearest(upper - span));
+  else start = wanted;
+
+  // Last resort, and only against the edges of the day itself. An overlap with
+  // a neighbour is survivable — a double-booked hour you created on purpose is
+  // information — but a block hanging off the end of Tuesday is not a time.
   const dayEnd = at(day, 24 * 60);
-  const start = Math.min(lower, snapNearest(dayEnd - minutes * MINUTE));
-  return new Date(Math.max(start, at(day, 0)));
+  return new Date(
+    Math.max(at(day, 0), Math.min(start, snapNearest(dayEnd - span))),
+  );
+}
+
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
 }
 
 /* ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import type {
   PlanBlock,
   Routine,
   RoutineOverride,
+  RoutineSkip,
   Task,
   TaskStatus,
 } from "../lib/types";
@@ -27,6 +28,7 @@ export function useData(userId: string) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [routineOverrides, setRoutineOverrides] = useState<RoutineOverride[]>([]);
+  const [routineSkips, setRoutineSkips] = useState<RoutineSkip[]>([]);
   const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,18 +62,20 @@ export function useData(userId: string) {
       // The plan blocks now include mirrored calendar events, which is the
       // point: the week grid draws lectures from this load, at the speed of
       // every other row, instead of waiting on Google after it has painted.
-      const [c, t, r, p, o] = await Promise.all([
+      const [c, t, r, p, o, k] = await Promise.all([
         db.listClasses(true),
         db.listTasks(),
         db.listRoutines(),
         db.listPlanBlocks(planFrom),
         db.listRoutineOverrides(),
+        db.listRoutineSkips(),
       ]);
       setClasses(c);
       setTasks(t);
       setRoutines(r);
       setPlanBlocks(p);
       setRoutineOverrides(o);
+      setRoutineSkips(k);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -122,6 +126,7 @@ export function useData(userId: string) {
     tasks,
     routines,
     routineOverrides,
+    routineSkips,
     planBlocks,
     planFrom,
     loading,

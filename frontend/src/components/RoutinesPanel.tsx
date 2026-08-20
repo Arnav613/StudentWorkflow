@@ -60,7 +60,7 @@ export default function RoutinesPanel({ store }: { store: DataStore }) {
       // From now rather than from midnight: a 7am routine entered at three in
       // the afternoon should not put a block on this morning, which is an hour
       // nobody can still keep.
-      await db.resyncRoutine(userId, routine, [], new Date(), PLAN_DAYS);
+      await db.resyncRoutine(userId, routine, [], [], new Date(), PLAN_DAYS);
       setTitle("");
       await refresh();
       toast(`${routine.title} added to your week`, "success");

@@ -157,9 +157,30 @@ export type RoutineOverride = {
   user_id: string;
   routine_id: string;
   weekday: number;
-  time_of_day: string;
+  /** Null only when `skipped` — the day is cancelled, not moved. */
+  time_of_day: string | null;
+  /** "Never on a Tuesday", which is as much an exception as "later". */
+  skipped: boolean;
   created_at: string;
   updated_at: string;
+};
+
+/**
+ * One occurrence of a routine that is not happening.
+ *
+ * A move can express "just this once" by locking its block, because the block
+ * survives to carry the flag. A skip cannot — the block is gone — so something
+ * has to remember it should stay gone the next time the week is planned.
+ *
+ * A local calendar date, never an instant: "not going on the 24th" is a
+ * statement about a day in the city you are standing in.
+ */
+export type RoutineSkip = {
+  id: string;
+  user_id: string;
+  routine_id: string;
+  on_date: string;
+  created_at: string;
 };
 
 /**
