@@ -67,3 +67,32 @@ export function BoardSkeleton() {
     </>
   );
 }
+
+/**
+ * The forecast: one wide block where the chart goes, and a few rows under it.
+ *
+ * Deliberately not a board or a grid. The whole point of a skeleton is that
+ * the furniture does not move when the data lands, and the forecast's
+ * furniture is a single panel two hundred pixels tall.
+ */
+export function ForecastSkeleton() {
+  return (
+    <>
+      <span className="sr-only" role="status">
+        Loading your forecast
+      </span>
+      <div className="stack" aria-hidden="true">
+        <section className="panel">
+          <div className="sk-block sk-chart" />
+        </section>
+        <section className="panel">
+          <Bar w="30%" />
+          <div className="sk-spacer" />
+          <Bar w="90%" />
+          <Bar w="75%" />
+          <Bar w="60%" />
+        </section>
+      </div>
+    </>
+  );
+}

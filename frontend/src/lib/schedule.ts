@@ -419,30 +419,41 @@ function isSameDay(a: Date, b: Date): boolean {
    ------------------------------------------------------------------------ */
 
 /**
- * Plan `days` days from `from`.
+ * The shape of the week before any work is put into it.
  *
- * Order of business, and the reason for it:
- *
- * 1. Routines and locked blocks become blocks immediately. They are not
- *    decisions this function gets to make — they are the shape of the week it
- *    has to work inside.
- * 2. Those, plus the calendar's busy intervals, are carved out of waking
- *    hours to leave the free windows.
- * 3. Tasks are placed earliest deadline first, each one taking the earliest
- *    free time it can reach, split at 90 minutes with a break between
- *    sittings, and never after its own due date.
- * 4. Whatever is left over is returned, loudly.
+ * Routines, the blocks a person locked, and the hours Google says are gone —
+ * everything that is not a decision the planner gets to make. Split out of
+ * `planWeek` because phase 08's forecast needs exactly this and nothing else:
+ * it never places a task, it only asks how many hours a day has left. Two
+ * implementations of "which hours are already spoken for" would put a capacity
+ * line on the forecast that disagreed with the week the planner actually
+ * produces, and the disagreement would be invisible — two plausible numbers on
+ * two screens, no way to tell which one is lying.
  */
-export function planWeek({
-  tasks,
+export type Commitments = {
+  /** Routine occurrences and locked blocks, shaped for a plan. */
+  blocks: PlannedBlock[];
+  /** Every interval already gone, sorted by start. Overlaps are normal. */
+  occupied: Interval[];
+  /** Minutes a locked block has already committed to a task, by task id. */
+  lockedMinutes: Map<string, number>;
+};
+
+export function commitments({
   routines,
+  routineOverrides = [],
   busy,
   locked,
-  routineOverrides = [],
   from,
-  days = 7,
-  medians,
-}: PlanInput): Plan {
+  days,
+}: {
+  routines: Routine[];
+  routineOverrides?: RoutineOverride[];
+  busy: BusyInterval[];
+  locked: PlanBlock[];
+  from: Date;
+  days: number;
+}): Commitments {
   const horizon = planDays(from, days);
   const floor = from.getTime();
   const ceiling = at(addDays(horizon[0], days - 1), DAY_END_HOUR * 60);
@@ -509,7 +520,7 @@ export function planWeek({
     }
   }
 
-  // 2. Busy intervals from Google. Times only — see routers/calendar.py.
+  // 2. Busy intervals from Google. See routers/calendar.py.
   for (const b of busy) {
     const start = Date.parse(b.starts_at);
     const end = Date.parse(b.ends_at);
@@ -519,15 +530,67 @@ export function planWeek({
   }
 
   occupied.sort((a, b) => a.start - b.start);
+  return { blocks, occupied, lockedMinutes };
+}
 
+/**
+ * Waking hours, minus everything already spoken for.
+ *
+ * Never earlier than `from`: an hour that has gone by is not free, it is over.
+ * That is why today's column is short by lunchtime, and why the forecast's
+ * capacity for today falls through the afternoon rather than standing at
+ * fourteen hours until midnight.
+ */
+export function freeWindows(occupied: Interval[], from: Date, days: number): Interval[] {
+  const floor = from.getTime();
   const windows: Interval[] = [];
-  for (const day of horizon) {
+  for (const day of planDays(from, days)) {
     const open = Math.max(at(day, DAY_START_HOUR * 60), floor);
     const close = at(day, DAY_END_HOUR * 60);
     if (close <= open) continue;
     windows.push(...carve({ start: open, end: close }, occupied));
   }
   windows.sort((a, b) => a.start - b.start);
+  return windows;
+}
+
+/**
+ * Plan `days` days from `from`.
+ *
+ * Order of business, and the reason for it:
+ *
+ * 1. Routines and locked blocks become blocks immediately. They are not
+ *    decisions this function gets to make — they are the shape of the week it
+ *    has to work inside.
+ * 2. Those, plus the calendar's busy intervals, are carved out of waking
+ *    hours to leave the free windows.
+ * 3. Tasks are placed earliest deadline first, each one taking the earliest
+ *    free window it fits inside whole, and never after its own due date.
+ * 4. Whatever is left over is returned, loudly.
+ */
+export function planWeek({
+  tasks,
+  routines,
+  busy,
+  locked,
+  routineOverrides = [],
+  from,
+  days = 7,
+  medians,
+}: PlanInput): Plan {
+  const floor = from.getTime();
+
+  // 1 and 2. The shape of the week, which this function does not get a vote
+  // on. Shared with the forecast — see `commitments`.
+  const { blocks, occupied, lockedMinutes } = commitments({
+    routines,
+    routineOverrides,
+    busy,
+    locked,
+    from,
+    days,
+  });
+  const windows = freeWindows(occupied, from, days);
 
   // 3. Tasks, earliest deadline first. Undated work sorts last — "sometime"
   // must never displace "Thursday" — and among equals the shorter job goes

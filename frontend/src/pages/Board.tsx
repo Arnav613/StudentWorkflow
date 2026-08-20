@@ -4,11 +4,16 @@ import { useData } from "../hooks/useData";
 import ClassesPage from "./Classes";
 import TodoPage from "./Todo";
 import WeekPage from "./Week";
+import ForecastPage from "./Forecast";
 import ClassDetail from "./ClassDetail";
 import AccountMenu from "../components/AccountMenu";
 import Logo from "../components/Logo";
 import { useTitle } from "../lib/title";
-import { BoardSkeleton, ClassGridSkeleton } from "../components/Skeleton";
+import {
+  BoardSkeleton,
+  ClassGridSkeleton,
+  ForecastSkeleton,
+} from "../components/Skeleton";
 
 /*
  * The editor is by far the largest thing this app ships — bigger than the
@@ -41,6 +46,7 @@ export type View =
   | { kind: "classes" }
   | { kind: "todo" }
   | { kind: "week" }
+  | { kind: "forecast" }
   | { kind: "class"; id: string; tab: ClassTab };
 
 export type ClassTab = "tasks" | "notes" | "docs";
@@ -51,6 +57,7 @@ function viewToHash(v: View): string {
   if (v.kind === "classes") return "#/classes";
   if (v.kind === "todo") return "#/todo";
   if (v.kind === "week") return "#/week";
+  if (v.kind === "forecast") return "#/forecast";
   return `#/class/${v.id}/${v.tab}`;
 }
 
@@ -58,6 +65,7 @@ function hashToView(hash: string): View {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "todo") return { kind: "todo" };
   if (parts[0] === "week") return { kind: "week" };
+  if (parts[0] === "forecast") return { kind: "forecast" };
   if (parts[0] === "class" && parts[1]) {
     const tab = CLASS_TABS.includes(parts[2] as ClassTab)
       ? (parts[2] as ClassTab)
@@ -114,10 +122,11 @@ export default function Board({
 
   const tab = view.kind === "class" ? "classes" : view.kind;
 
-  const TOP_TAB_TITLE: Record<"classes" | "todo" | "week", string> = {
+  const TOP_TAB_TITLE: Record<"classes" | "todo" | "week" | "forecast", string> = {
     classes: "Classes",
     todo: "To do",
     week: "Week",
+    forecast: "Forecast",
   };
 
   const TAB_LABEL: Record<ClassTab, string> = {
@@ -171,6 +180,15 @@ export default function Board({
             >
               Week
             </button>
+            {/* And the fourth: how much of it there is going to be. The other
+                three are about now; this one is the only tab that is any use
+                before the week it describes arrives. */}
+            <button
+              className={`tab${tab === "forecast" ? " current" : ""}`}
+              onClick={() => go({ kind: "forecast" })}
+            >
+              Forecast
+            </button>
           </nav>
 
           <span className="spacer" />
@@ -190,7 +208,9 @@ export default function Board({
       )}
 
       {store.loading ? (
-        view.kind === "todo" || view.kind === "week" ? (
+        view.kind === "forecast" ? (
+          <ForecastSkeleton />
+        ) : view.kind === "todo" || view.kind === "week" ? (
           <BoardSkeleton />
         ) : (
           <ClassGridSkeleton />
@@ -204,6 +224,11 @@ export default function Board({
         <TodoPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
       ) : view.kind === "week" ? (
         <WeekPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
+      ) : view.kind === "forecast" ? (
+        <ForecastPage
+          store={store}
+          onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })}
+        />
       ) : view.kind === "class" && openClass ? (
         <ClassDetail
           cls={openClass}

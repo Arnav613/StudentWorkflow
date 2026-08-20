@@ -2542,3 +2542,145 @@ button.link.danger:hover:not(:disabled) {
     flex: 1;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Phase 08: the workload forecast
+   ---------------------------------------------------------------------------
+   One SVG, drawn by hand, and no chart library. The colours are the class
+   hues already in this file — an SVG child of `.hue-blue` inherits `--c` like
+   anything else, which is the entire reason the bars can be trusted to match
+   the cards, the chips and the blocks on the week grid.
+   -------------------------------------------------------------------------*/
+
+.forecast-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.forecast-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* Faint enough to read past. A gridline that competes with a bar is a
+   gridline drawing attention to the wrong thing. */
+.forecast-chart .grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.forecast-chart .axis,
+.forecast-chart .day-label,
+.forecast-chart .day-date {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.forecast-chart .day-label {
+  fill: var(--fg);
+  font-size: 11.5px;
+}
+
+.forecast-chart .bar {
+  fill: var(--c);
+  rx: 2;
+}
+
+/*
+ * Capacity: a dashed rule per day, not a curve across the fortnight.
+ *
+ * Dashed because it is not a measurement, it is a ceiling — the hours that
+ * day has if nothing else happens, which is a claim about the future and
+ * should not be drawn with the same confidence as work you have written down.
+ */
+.forecast-chart .capacity {
+  stroke: var(--fg);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+  opacity: 0.45;
+}
+
+/* The day is the problem, not the work in it, so the day gets the colour. */
+.forecast-chart .col-wash {
+  fill: var(--error);
+  opacity: 0.07;
+}
+
+.forecast-chart .col.over .day-label,
+.forecast-chart .col.over .day-date {
+  fill: var(--error);
+  font-weight: 600;
+}
+
+.forecast-chart .col.over .capacity {
+  stroke: var(--error);
+  opacity: 0.9;
+}
+
+.forecast-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+}
+
+.forecast-legend > li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* The same dot the legend and the outstanding list both need, and small
+   enough that a class colour reads as a label rather than as decoration. */
+.hue-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: var(--r-pill);
+  background: var(--c, var(--border-strong));
+  flex: none;
+}
+
+.load-list > li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.15rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.load-list > li:last-child {
+  border-bottom: 0;
+}
+
+.load-list .link {
+  text-align: left;
+}
+
+/* Not an error — nothing has gone wrong — but not nothing either. Unplanned
+   hours are the number this screen exists to keep visible. */
+.warn {
+  color: var(--warn);
+}
+
+.sk-chart {
+  height: 12rem;
+  width: 100%;
+}
+
+/* A fortnight of columns will not fit a phone in landscape either, so the
+   chart scrolls sideways inside its panel rather than shrinking its labels
+   past reading. The panel keeps its padding; only the drawing moves. */
+@media (max-width: 44rem) {
+  .forecast-panel {
+    overflow-x: auto;
+  }
+  .forecast-chart {
+    min-width: 34rem;
+  }
+}
+
