@@ -14,6 +14,7 @@ import { formatEstimate } from "../lib/schedule";
 import { toast, undoable } from "../lib/toast";
 import ChecklistEditor from "./ChecklistEditor";
 import EstimatePicker from "./EstimatePicker";
+import { isSelectClick, type SelectModifiers } from "../hooks/useSelection";
 
 /**
  * One card on the board.
@@ -31,6 +32,8 @@ export default function TaskCard({
   onChanged,
   onRemove,
   onOpenClass,
+  selected = false,
+  onSelect,
 }: {
   task: Task;
   cls: Class | null;
@@ -41,6 +44,9 @@ export default function TaskCard({
   /** Set on the all-classes board, absent inside a class — where it would
       only ever navigate to the page you are already on. */
   onOpenClass?: (id: string) => void;
+  selected?: boolean;
+  /** Ctrl or shift came down on this card. Absent where selection is off. */
+  onSelect?: (e: SelectModifiers) => void;
 }) {
   const [open, setOpen] = useState(false);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -89,14 +95,31 @@ export default function TaskCard({
     });
   }
 
+  /*
+   * A modified click is a selection and stops being anything else.
+   *
+   * Caught on the way down, before dnd-kit's own pointerdown listener sees it,
+   * because the alternative is a ctrl-click that selects the card *and* picks
+   * it up. `preventDefault` is there for the shift-click, which browsers
+   * otherwise answer by selecting the text between two cards.
+   */
+  function onPointerDownCapture(e: React.PointerEvent) {
+    if (!onSelect || !isSelectClick(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onSelect(e);
+  }
+
   return (
     <li
       ref={setNodeRef}
       {...listeners}
       {...attributes}
+      onPointerDownCapture={onPointerDownCapture}
+      aria-selected={onSelect ? selected : undefined}
       className={`card ${cls ? `hue-${cls.color}` : "hue-none"} ${
         isDragging ? "dragging" : ""
-      } ${overdue ? "overdue" : ""}`}
+      } ${overdue ? "overdue" : ""}${selected ? " selected" : ""}`}
     >
       <div className="row">
         <span

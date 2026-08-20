@@ -2629,3 +2629,207 @@ button.link.danger:hover:not(:disabled) {
   height: 14rem;
   width: 100%;
 }
+
+/* ---------------------------------------------------------------------------
+   Selecting several at once
+   ---------------------------------------------------------------------------
+   Ctrl toggles, shift takes the run between. The same two modifiers on the
+   board and on the week, because they are one gesture people already own and
+   the app's job is to not have an opinion about it.
+
+   The selected state is a ring rather than a fill. Every card on both screens
+   already carries a class colour that means something, and a selection that
+   repainted it would trade a fact about the work for a fact about the mouse.
+   -------------------------------------------------------------------------*/
+
+.card.selected,
+.bar.selected,
+.rail-item.selected {
+  /* Inset on the bar, which is positioned to the pixel on a timeline and
+     would otherwise grow a two-pixel halo into its neighbours. */
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-color: var(--accent);
+}
+
+.card.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* A selected block that is also open keeps the open ring — they mean the same
+   thing here and two rings would just be thicker. */
+.bar.selected.open {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.rail-item.selected {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+/* A shift-click across a column must not leave half the board highlighted
+   blue, so the cards themselves do not take a text selection. */
+.rail-item,
+.list > li.card {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Except the part of a card that is prose. An opened task shows its
+   description, and a description you cannot select is a description you
+   cannot copy into whatever you are actually writing. Nothing in here starts
+   a drag or a selection, so it costs nothing to hand it back. */
+.list > li.card .task-detail {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ---- The bar ------------------------------------------------------------ */
+
+/*
+ * Fixed to the foot of the window, not pushed into the page.
+ *
+ * A selection can span a board that scrolls and a week that scrolls
+ * independently of it, so a bar in the flow would be somewhere else by the
+ * time you wanted it. It appears only at two or more — see SelectionBar — so
+ * neither screen pays any furniture for a feature it is not using.
+ */
+.selection-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 1.1rem;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: min(56rem, calc(100vw - 2rem));
+  padding: 0.5rem 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-lg);
+  animation: selection-in 120ms ease-out;
+}
+
+@keyframes selection-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0.4rem);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .selection-bar {
+    animation: none;
+  }
+}
+
+.selection-count {
+  flex: none;
+  padding: 0 0.35rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/*
+ * The actions scroll rather than wrap. The bar is one line by design — it
+ * hovers over the work it acts on, and a strip that grew to three rows on a
+ * narrow window would cover the cards you are trying to see.
+ */
+.selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.selection-bar button {
+  flex: none;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  padding: 0.28rem 0.55rem;
+}
+
+/* The pickers were built for a form field and sit two sizes too large in
+   here — full width, form padding, a caret sized for a label above it. */
+.selection-actions .picker {
+  flex: none;
+}
+
+.selection-actions .picker-trigger {
+  font-size: 0.82rem;
+  padding: 0.28rem 0.55rem;
+  width: auto;
+  /* Wide enough that "Not estimated" and a long class name do not make the
+     bar jump every time the selection changes. */
+  min-width: 8rem;
+  max-width: 11rem;
+  border-radius: var(--r-pill);
+}
+
+/*
+ * "Not estimated" and "No class" are the *answer* here, not a placeholder.
+ *
+ * On a form `.empty` is the grey of an unfilled field, which is right there
+ * and wrong in the bar: a selection that genuinely has no shared estimate is
+ * telling you something, and rendering it in the disabled grey made both
+ * pickers look like controls that were not available yet.
+ */
+.selection-actions .picker-trigger.empty {
+  color: var(--muted);
+}
+
+/* Their popovers open upward: there is nothing below a bar pinned to the
+   bottom of the window. */
+.selection-actions .picker-pop {
+  top: auto;
+  bottom: calc(100% + 0.35rem);
+  max-height: 14rem;
+  min-width: 11rem;
+}
+
+.selection-sep {
+  flex: none;
+  width: 1px;
+  align-self: stretch;
+  margin: 0.1rem 0.15rem;
+  background: var(--border);
+}
+
+/* The one destructive button on the bar, in the one colour reserved for it. */
+.selection-bar button.danger {
+  color: var(--error);
+}
+
+.selection-bar button.danger:hover {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+}
+
+.selection-clear {
+  flex: none;
+  color: var(--muted);
+}
+
+@media (max-width: 40rem) {
+  .selection-bar {
+    left: 0.6rem;
+    right: 0.6rem;
+    max-width: none;
+    transform: none;
+  }
+  @keyframes selection-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+}

@@ -257,6 +257,72 @@ export async function deleteTask(id: string): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * The same edit, to several tasks, in one statement.
+ *
+ * A loop of `updateTask` would do it and would be wrong in two ways: it is a
+ * round trip per card, so a selection of twelve visibly repaints twelve times,
+ * and it can fail halfway and leave half the selection changed with no record
+ * of which half. One `in` clause is atomic enough for what this is.
+ *
+ * Deliberately narrower than `updateTask`. Title and description are the two
+ * fields nobody has ever wanted to set to the same value across a selection,
+ * and offering them would only make "apply to all" a way to lose eleven
+ * titles.
+ */
+export async function updateTasks(
+  ids: string[],
+  patch: Partial<Pick<Task, "class_id" | "status" | "estimate_minutes" | "due_at">>,
+): Promise<Task[]> {
+  if (!ids.length) return [];
+  return unwrap(
+    await supabase.from("tasks").update(patch).in("id", ids).select(),
+  );
+}
+
+/**
+ * Move several tasks to a column at once.
+ *
+ * Split from `updateTasks` for the one reason `moveTask` exists at all:
+ * `status_overridden`, which must be set on exactly the rows sync had marked
+ * Done and on no others. That is two statements rather than one, and the
+ * alternative — setting the flag across the whole selection — would quietly
+ * stop every card in it from ever auto-completing again.
+ */
+export async function moveTasks(
+  tasks: Task[],
+  status: TaskStatus,
+): Promise<Task[]> {
+  if (!tasks.length) return [];
+
+  const arguing = tasks
+    .filter((t) => t.auto_completed && status !== "done")
+    .map((t) => t.id);
+  if (arguing.length) {
+    unwrap(
+      await supabase
+        .from("tasks")
+        .update({ status_overridden: true })
+        .in("id", arguing)
+        .select(),
+    );
+  }
+
+  return unwrap(
+    await supabase
+      .from("tasks")
+      .update({ status })
+      .in("id", tasks.map((t) => t.id))
+      .select(),
+  );
+}
+
+export async function deleteTasks(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const { error } = await supabase.from("tasks").delete().in("id", ids);
+  if (error) throw error;
+}
+
 // ---------------------------------------------------------------------------
 // Checklist items — always hand-added, never generated.
 // ---------------------------------------------------------------------------
@@ -534,6 +600,26 @@ export async function unlockBlock(id: string): Promise<PlanBlock> {
 
 export async function deleteBlock(id: string): Promise<void> {
   const { error } = await supabase.from("plan_blocks").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/** Several blocks off the grid at once. Same reasoning as `deleteTasks`. */
+export async function deleteBlocks(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const { error } = await supabase.from("plan_blocks").delete().in("id", ids);
+  if (error) throw error;
+}
+
+/** Several lectures dropped at once. A mirror row is dismissed, never deleted. */
+export async function setDismissedMany(
+  ids: string[],
+  dismissed: boolean,
+): Promise<void> {
+  if (!ids.length) return;
+  const { error } = await supabase
+    .from("plan_blocks")
+    .update({ dismissed })
+    .in("id", ids);
   if (error) throw error;
 }
 

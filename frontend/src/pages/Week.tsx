@@ -16,7 +16,7 @@ import {
 } from "@dnd-kit/core";
 import * as db from "../lib/db";
 import { getCalendar } from "../lib/api";
-import { errorText, toast } from "../lib/toast";
+import { errorText, toast, undoable } from "../lib/toast";
 import { formatDue } from "../lib/board";
 import {
   PLAN_DAYS,
@@ -43,11 +43,21 @@ import {
   insertAt,
   instantOf,
   layoutDay,
+  snapToSlot,
   minutesFrom,
   spanOf,
   type Placed,
 } from "../lib/weekgrid";
+import {
+  useSelection,
+  isSelectClick,
+  type Selection,
+  type SelectModifiers,
+} from "../hooks/useSelection";
 import RoutinesPanel from "../components/RoutinesPanel";
+import SelectionBar from "../components/SelectionBar";
+import EstimatePicker from "../components/EstimatePicker";
+import ClassPicker from "../components/ClassPicker";
 import ScopeDialog, { type Scope } from "../components/ScopeDialog";
 import TimePicker from "../components/TimePicker";
 import type { DataStore } from "../hooks/useData";
@@ -254,6 +264,71 @@ export default function WeekPage({
     .reduce((sum, b) => sum + blockMinutes(b), 0);
 
   const missed = outstanding.filter((u) => u.missed).length;
+
+  /* --- Selecting several at once ------------------------------------------ */
+
+  /*
+   * The order a shift-range runs along, which on a chart is not obvious and
+   * has to be chosen.
+   *
+   * Monday first, and within a day the earliest thing first — so a range reads
+   * the way the week happens, not the way it is drawn. Drawn order would put
+   * eleven at night before eight in the morning, since the column grows
+   * upward, and "everything from here to there" would come out backwards on
+   * every day of the week.
+   *
+   * The rail comes after all seven days. It is not part of the week's
+   * chronology; it is what is left over, and left over goes last.
+   */
+  const order = useMemo(() => {
+    const ids = laid.flatMap((column) =>
+      [...column]
+        .sort((a, b) => a.startMin - b.startMin)
+        .map((p) => `block:${p.item.id}`),
+    );
+    for (const u of outstanding) ids.push(`task:${u.task_id}`);
+    for (const b of skipped) ids.push(`block:${b.id}`);
+    return ids;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laid, planBlocks, tasks]);
+
+  const selection = useSelection(order);
+
+  const blockById = useMemo(
+    () => new Map(planBlocks.map((b) => [b.id, b])),
+    [planBlocks],
+  );
+
+  /** The selected plan blocks, in whatever order the set came out. */
+  const chosenBlocks = useMemo(
+    () =>
+      [...selection.selected]
+        .filter((id) => id.startsWith("block:"))
+        .map((id) => blockById.get(id.slice(6)))
+        .filter((b): b is PlanBlock => Boolean(b)),
+    [selection.selected, blockById],
+  );
+
+  /**
+   * The tasks behind the selection.
+   *
+   * A block and a rail item are two things on screen and one thing in the
+   * database, so anything that acts on a *task* — an estimate, a class, Done,
+   * a delete — collapses them. Selecting a block and its own rail entry counts
+   * once, which is the only answer that does not make "3 selected" delete two
+   * things.
+   */
+  const chosenTasks = useMemo(() => {
+    const ids = new Set<string>();
+    for (const id of selection.selected) {
+      if (id.startsWith("task:")) ids.add(id.slice(5));
+      else {
+        const b = blockById.get(id.slice(6));
+        if (b?.task_id) ids.add(b.task_id);
+      }
+    }
+    return [...ids].map((id) => taskById.get(id)).filter((t): t is Task => Boolean(t));
+  }, [selection.selected, blockById, taskById]);
 
   /**
    * What colour a block carries.
@@ -566,6 +641,186 @@ export default function WeekPage({
     }
   }
 
+  /* --- Everything that acts on more than one --------------------------- */
+
+  /**
+   * Take a selection off the grid.
+   *
+   * The same three outcomes `clear` has, applied without asking three
+   * questions: work is deleted and its task falls back into the rail,
+   * a lecture is dismissed because the row is Google's mirror.
+   *
+   * Routines are left where they are, on purpose. Removing one asks whether
+   * you mean this Tuesday, every Tuesday, or the whole routine — and there is
+   * no honest way to answer that on behalf of six blocks at once. Guessing the
+   * narrowest reading would be the tempting version and it would silently
+   * strand skip rows all over the term. So they are skipped and said aloud.
+   */
+  async function unplanMany() {
+    const routines = chosenBlocks.filter((b) => b.routine_id).length;
+    const work = chosenBlocks.filter((b) => !b.routine_id && !b.google_event_id);
+    const lectures = chosenBlocks.filter((b) => b.google_event_id);
+    if (!work.length && !lectures.length) {
+      toast(
+        routines
+          ? "Routines come off one at a time — the question they ask has three answers."
+          : "Nothing on the grid is selected",
+        "info",
+      );
+      return;
+    }
+
+    const gone = new Set(work.map((b) => b.id));
+    const hidden = new Set(lectures.map((b) => b.id));
+    const previous = planBlocks;
+    selection.clear();
+
+    setPlanBlocks((prev) =>
+      prev
+        .filter((b) => !gone.has(b.id))
+        .map((b) => (hidden.has(b.id) ? { ...b, dismissed: true } : b)),
+    );
+
+    try {
+      await Promise.all([
+        db.deleteBlocks([...gone]),
+        db.setDismissedMany([...hidden], true),
+      ]);
+      toast(
+        routines
+          ? `Unplanned. ${routines} routine block${routines === 1 ? "" : "s"} left alone — those are removed one at a time.`
+          : `${gone.size + hidden.size} taken off the week`,
+        routines ? "info" : "success",
+      );
+    } catch (e) {
+      setPlanBlocks(previous);
+      toast(errorText(e, "Could not take those off"), "error");
+    }
+  }
+
+  /** Mark the work behind the selection finished. Its hours stay where they are. */
+  async function markDone() {
+    const live = chosenTasks.filter((t) => t.status !== "done");
+    if (!live.length) {
+      toast("Nothing selected that is still outstanding", "info");
+      return;
+    }
+    const ids = new Set(live.map((t) => t.id));
+    const previous = tasks;
+    setTasks((prev) =>
+      prev.map((t) => (ids.has(t.id) ? { ...t, status: "done" as const } : t)),
+    );
+    try {
+      const saved = await db.moveTasks(live, "done");
+      const byId = new Map(saved.map((t) => [t.id, t]));
+      setTasks((prev) => prev.map((t) => byId.get(t.id) ?? t));
+      toast(`${live.length} marked done`, "success");
+    } catch (e) {
+      setTasks(previous);
+      toast(errorText(e, "Could not mark those done"), "error");
+    }
+  }
+
+  /**
+   * One estimate, or one class, across the selection.
+   *
+   * An estimate also resizes the blocks, because on this screen a block's
+   * length *is* the estimate — that invariant is what lets you correct a
+   * guess by dragging the end of a block, and writing one without the other
+   * would leave the next Replan undoing whichever half was missed.
+   */
+  async function patchMany(
+    patch: Partial<Pick<Task, "class_id" | "estimate_minutes">>,
+    said: string,
+  ) {
+    if (!chosenTasks.length) return;
+    const ids = chosenTasks.map((t) => t.id);
+    const idSet = new Set(ids);
+    const previousTasks = tasks;
+    const previousBlocks = planBlocks;
+
+    const minutes = patch.estimate_minutes;
+    const resized =
+      minutes == null
+        ? []
+        : planBlocks
+            .filter((b) => b.task_id && idSet.has(b.task_id))
+            .map((b) => ({
+              id: b.id,
+              starts_at: b.starts_at,
+              ends_at: new Date(
+                Date.parse(b.starts_at) + minutes * 60_000,
+              ).toISOString(),
+            }));
+    const byId = new Map(resized.map((r) => [r.id, r]));
+
+    setTasks((prev) => prev.map((t) => (idSet.has(t.id) ? { ...t, ...patch } : t)));
+    if (resized.length) {
+      setPlanBlocks((prev) =>
+        inOrder(
+          prev.map((b) => {
+            const r = byId.get(b.id);
+            return r ? { ...b, ends_at: r.ends_at } : b;
+          }),
+        ),
+      );
+    }
+
+    try {
+      const saved = await db.updateTasks(ids, patch);
+      const savedById = new Map(saved.map((t) => [t.id, t]));
+      setTasks((prev) => prev.map((t) => savedById.get(t.id) ?? t));
+      await Promise.all(
+        resized.map((r) => db.shiftBlock(r.id, r.starts_at, r.ends_at)),
+      );
+      toast(said, "success");
+    } catch (e) {
+      setTasks(previousTasks);
+      setPlanBlocks(previousBlocks);
+      toast(errorText(e, "Could not change those"), "error");
+    }
+  }
+
+  /**
+   * Delete the tasks behind the selection, hours and all.
+   *
+   * The destructive one, and separate from Unplan for exactly that reason:
+   * taking work off the week and deciding the work does not exist are two
+   * different sentences, and a single button that meant either would be
+   * pressed for the first and do the second. Five seconds of undo, no dialog.
+   */
+  function deleteMany() {
+    const list = chosenTasks;
+    if (!list.length) {
+      toast("Nothing selected that is a task", "info");
+      return;
+    }
+    const ids = list.map((t) => t.id);
+    const idSet = new Set(ids);
+    const previousTasks = tasks;
+    const previousBlocks = planBlocks;
+
+    selection.clear();
+    undoable({
+      message: `Deleted ${ids.length} task${ids.length === 1 ? "" : "s"}`,
+      apply: () => {
+        setTasks((prev) => prev.filter((t) => !idSet.has(t.id)));
+        // Their hours go with them on screen. The database does this itself —
+        // plan_blocks.task_id cascades — but not until the grace period is up,
+        // and a block left drawn against a deleted task is a ghost.
+        setPlanBlocks((prev) =>
+          prev.filter((b) => !(b.task_id && idSet.has(b.task_id))),
+        );
+      },
+      commit: () => db.deleteTasks(ids),
+      revert: () => {
+        setTasks(previousTasks);
+        setPlanBlocks(previousBlocks);
+      },
+      onError: () => toast("They are still there", "info"),
+    });
+  }
+
   /* --- "…and every Tuesday?" ---------------------------------------------- */
 
   /**
@@ -762,8 +1017,21 @@ export default function WeekPage({
     const over = e.over?.id;
     if (!subject || typeof over !== "string") return;
 
+    /*
+     * A dragged thing that is part of the selection brings the selection with
+     * it. Anything outside the selection is just itself, and leaves the
+     * selection alone rather than silently clearing it.
+     */
+    const activeId =
+      subject.kind === "task" ? `task:${subject.task.id}` : `block:${subject.block.id}`;
+    const group = selection.count > 1 && selection.has(activeId);
+
     /* Off the board, into the rail. The only way to remove anything. */
     if (over === "unplanned") {
+      if (group) {
+        await unplanMany();
+        return;
+      }
       if (subject.kind === "task") return;
       await clear(subject.block);
       return;
@@ -801,6 +1069,11 @@ export default function WeekPage({
     const floorMin = today
       ? Math.max(GRID_START_MIN, minutesFrom(day, new Date(snapUp(Date.now()))))
       : GRID_START_MIN;
+
+    if (group) {
+      await dropGroup(subject, day, cursorMin, floorMin);
+      return;
+    }
 
     const held = subject.kind === "task" ? null : subject.block.id;
     const { startMin, shifts } = insertAt({
@@ -882,7 +1155,162 @@ export default function WeekPage({
     }
   }
 
+  /**
+   * Dropping several things at once.
+   *
+   * Two gestures, told apart by what you grabbed, because the two selections
+   * mean different things.
+   *
+   * Grab a *block* and the whole selection of blocks travels by one time
+   * delta: the thing under the cursor lands where you dropped it and every
+   * other selected block moves by exactly as much, so the gaps between them —
+   * and the days between them — survive intact. That is what "keep their
+   * relative spacing" has to mean once a selection can span Tuesday and
+   * Friday.
+   *
+   * Grab a *rail item* and the selected rail items stack back to back from the
+   * drop point, in the order the rail lists them. There is no spacing to
+   * preserve — none of them has ever had a time — and an evening of work
+   * planned as one run is what dragging four unplanned things onto Thursday
+   * was asking for.
+   *
+   * Neither cascades. A single drop pushes what it lands on out of the way,
+   * which is a legible rearrangement of one day; six blocks each pushing their
+   * own neighbours is not something anyone could predict before letting go, so
+   * a group lands where it lands and is allowed to overlap. The chart draws
+   * the clash side by side and you can see exactly what happened.
+   */
+  async function dropGroup(
+    subject: DragSubject,
+    day: Date,
+    cursorMin: number,
+    floorMin: number,
+  ) {
+    const startMin = Math.max(floorMin, snapToSlot(cursorMin));
+    const start = instantOf(day, startMin);
+
+    if (subject.kind === "block") {
+      const delta = start.getTime() - Date.parse(subject.block.starts_at);
+      const moved = chosenBlocks.map((b) => {
+        const s = new Date(Date.parse(b.starts_at) + delta);
+        return {
+          id: b.id,
+          starts_at: s.toISOString(),
+          ends_at: new Date(s.getTime() + blockMinutes(b) * 60_000).toISOString(),
+        };
+      });
+
+      // All or nothing against the clock. Moving four blocks and quietly
+      // dropping the one that would land this morning is a worse outcome than
+      // refusing: you would not find out which one until you went looking.
+      const stale = moved.filter((m) => Date.parse(m.ends_at) <= Date.now()).length;
+      if (stale) {
+        toast(
+          stale === moved.length
+            ? "That hour has already gone"
+            : `That would put ${stale} of them in an hour that has gone`,
+          "info",
+        );
+        return;
+      }
+
+      const byId = new Map(moved.map((m) => [m.id, m]));
+      const previous = planBlocks;
+      setPlanBlocks((prev) =>
+        inOrder(
+          prev.map((b) => {
+            const m = byId.get(b.id);
+            return m ? { ...b, starts_at: m.starts_at, ends_at: m.ends_at, locked: true } : b;
+          }),
+        ),
+      );
+      try {
+        await Promise.all(
+          moved.map((m) => db.moveBlock(m.id, m.starts_at, m.ends_at)),
+        );
+      } catch (e) {
+        setPlanBlocks(previous);
+        toast(errorText(e, "Could not move those"), "error");
+      }
+      return;
+    }
+
+    /* A run of unplanned work, back to back from where you let go. */
+    const queue = outstanding.filter((u) => selection.has(`task:${u.task_id}`));
+    if (!queue.length) return;
+
+    let cursor = start.getTime();
+    const placing = queue.map((u) => {
+      const minutes = sitting(u.minutes);
+      const starts_at = new Date(cursor).toISOString();
+      cursor += minutes * 60_000;
+      return { task_id: u.task_id, starts_at, ends_at: new Date(cursor).toISOString() };
+    });
+
+    if (Date.parse(placing[0].starts_at) + 60_000 <= Date.now()) {
+      toast("That hour has already gone", "info");
+      return;
+    }
+
+    const previous = planBlocks;
+    selection.clear();
+    setPlanBlocks((prev) =>
+      inOrder([
+        ...prev,
+        ...placing.map((pl) => ({
+          id: `pending-${pl.task_id}-${pl.starts_at}`,
+          user_id: userId,
+          task_id: pl.task_id,
+          routine_id: null,
+          google_event_id: null,
+          title: null,
+          starts_at: pl.starts_at,
+          ends_at: pl.ends_at,
+          locked: true,
+          dismissed: false,
+          created_at: pl.starts_at,
+          updated_at: pl.starts_at,
+        })),
+      ]),
+    );
+    try {
+      await Promise.all(
+        placing.map((pl) =>
+          db.createTaskBlock({
+            user_id: userId,
+            task_id: pl.task_id,
+            starts_at: pl.starts_at,
+            ends_at: pl.ends_at,
+          }),
+        ),
+      );
+      await refresh();
+      toast(`${placing.length} things given hours`, "success");
+    } catch (e) {
+      setPlanBlocks(previous);
+      toast(errorText(e, "Could not place those"), "error");
+    }
+  }
+
   /* --- The screen ---------------------------------------------------------*/
+
+  /*
+   * What the pickers show for a selection: the shared value, or nothing.
+   *
+   * Showing the first task's estimate for a mixed selection would be a control
+   * that lies about four of the five things it is pointed at, and the first
+   * thing anybody does with a picker is read it before touching it.
+   */
+  const sharedClass =
+    chosenTasks.length &&
+    chosenTasks.every((t) => t.class_id === chosenTasks[0].class_id)
+      ? chosenTasks[0].class_id ?? ""
+      : "";
+  const sharedEstimate =
+    chosenTasks.length &&
+    chosenTasks.every((t) => t.estimate_minutes === chosenTasks[0].estimate_minutes)
+      ? chosenTasks[0].estimate_minutes
+      : null;
 
   return (
     <div className="stack">
@@ -998,6 +1426,8 @@ export default function WeekPage({
                     onToggle={() =>
                       setOpenId((cur) => (cur === p.item.id ? null : p.item.id))
                     }
+                    selected={selection.has(`block:${p.item.id}`)}
+                    onSelect={(e) => selection.select(`block:${p.item.id}`, e)}
                     /* Anchored away from the edge of the window. A panel wider
                        than its column has to lean somewhere, and on Saturday
                        the only direction with room is left. */
@@ -1041,15 +1471,66 @@ export default function WeekPage({
           skipped={skipped}
           classById={classById}
           missed={missed}
+          selection={selection}
         />
 
         <DragOverlay>
           {dragging && (
             <div className="card overlay">
-              {dragging.kind === "task" ? dragging.task.title : dragging.title}
+              {selection.count > 1 &&
+              selection.has(
+                dragging.kind === "task"
+                  ? `task:${dragging.task.id}`
+                  : `block:${dragging.block.id}`,
+              )
+                ? `${selection.count} selected`
+                : dragging.kind === "task"
+                  ? dragging.task.title
+                  : dragging.title}
             </div>
           )}
         </DragOverlay>
+
+        {/*
+          Two removals, side by side, because they are two different
+          sentences. Unplan takes the hours back and leaves the work; Delete
+          decides the work is not happening. One button meaning either would
+          be pressed for the first and do the second.
+        */}
+        <SelectionBar count={selection.count} onClear={selection.clear}>
+          <button className="btn-quiet" onClick={() => void unplanMany()}>
+            Unplan
+          </button>
+          <button className="btn-quiet" onClick={() => void markDone()}>
+            Mark done
+          </button>
+
+          <span className="selection-sep" aria-hidden="true" />
+
+          <EstimatePicker
+            value={sharedEstimate}
+            onChange={(m) =>
+              void patchMany(
+                { estimate_minutes: m },
+                m === null ? "Estimates cleared" : "Estimate applied",
+              )
+            }
+          />
+          <ClassPicker
+            classes={classes}
+            value={sharedClass}
+            onChange={(id) =>
+              void patchMany(
+                { class_id: id || null },
+                id ? "Moved to that class" : "Class cleared",
+              )
+            }
+          />
+
+          <button className="btn-quiet danger" onClick={deleteMany}>
+            Delete
+          </button>
+        </SelectionBar>
       </DndContext>
 
       {asking && (
@@ -1196,6 +1677,8 @@ function BlockBar({
   flip,
   vflip,
   onToggle,
+  selected,
+  onSelect,
   task,
   routine,
   cls,
@@ -1211,6 +1694,8 @@ function BlockBar({
   flip: boolean;
   vflip: boolean;
   onToggle: () => void;
+  selected: boolean;
+  onSelect: (e: SelectModifiers) => void;
   task: Task | null;
   routine: Routine | null;
   cls: Map<string, Class>;
@@ -1263,8 +1748,24 @@ function BlockBar({
       ref={setNodeRef}
       {...listeners}
       {...attributes}
-      onClick={onToggle}
-      className={`bar ${hue}${isDragging ? " dragging" : ""}${
+      onClick={(e) => {
+        if (isSelectClick(e)) return;
+        onToggle();
+      }}
+      /*
+       * A modified click selects, and stops being anything else — no panel,
+       * no drag. Caught on the way down so dnd-kit's own listener never sees
+       * it, and `preventDefault` so a shift-click does not also select the
+       * text across half the column.
+       */
+      onPointerDownCapture={(e) => {
+        if (!isSelectClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onSelect(e);
+      }}
+      aria-selected={selected}
+      className={`bar ${hue}${selected ? " selected" : ""}${isDragging ? " dragging" : ""}${
         routine ? " routine" : ""
       }${event ? " event" : ""}${block.locked ? " locked" : ""}${
         past ? " past" : ""
@@ -1354,6 +1855,7 @@ function UnplannedRail({
   skipped,
   classById,
   missed,
+  selection,
 }: {
   outstanding: {
     task_id: string;
@@ -1365,6 +1867,7 @@ function UnplannedRail({
   skipped: PlanBlock[];
   classById: Map<string, Class>;
   missed: number;
+  selection: Selection;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: "unplanned" });
   const total = outstanding.reduce((s, u) => s + u.minutes, 0);
@@ -1407,6 +1910,8 @@ function UnplannedRail({
                 id={`task:${u.task_id}`}
                 hue={cls ? `hue-${cls.color}` : "hue-none"}
                 title={u.task.title}
+                selected={selection.has(`task:${u.task_id}`)}
+                onSelect={(e) => selection.select(`task:${u.task_id}`, e)}
               >
                 {u.missed && <span className="tag">Missed</span>}
                 <span className={u.guessed ? "muted small guessed" : "muted small"}>
@@ -1426,6 +1931,8 @@ function UnplannedRail({
               id={`block:${b.id}`}
               hue="hue-none"
               title={b.title ?? "Calendar"}
+              selected={selection.has(`block:${b.id}`)}
+              onSelect={(e) => selection.select(`block:${b.id}`, e)}
             >
               <span className="tag">Skipping</span>
               <span className="muted small">
@@ -1446,20 +1953,33 @@ function RailItem({
   id,
   hue,
   title,
+  selected,
+  onSelect,
   children,
 }: {
   id: string;
   hue: string;
   title: string;
+  selected: boolean;
+  onSelect: (e: SelectModifiers) => void;
   children: React.ReactNode;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id });
   return (
     <li
       ref={setNodeRef}
-      className={`${hue} rail-item${isDragging ? " dragging" : ""}`}
+      className={`${hue} rail-item${isDragging ? " dragging" : ""}${
+        selected ? " selected" : ""
+      }`}
       {...listeners}
       {...attributes}
+      onPointerDownCapture={(e) => {
+        if (!isSelectClick(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onSelect(e);
+      }}
+      aria-selected={selected}
     >
       <span className="dot" />
       <span className="grow ellipsis">{title}</span>
