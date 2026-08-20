@@ -49,15 +49,24 @@ export async function signOut() {
 }
 
 /**
- * The two Classroom scopes, read-only, requested on their own.
+ * The Google scopes, all read-only, requested on their own.
  *
  * courses.readonly lists the courses; coursework.me.readonly reads this
  * student's assignments and their own submission state. Nothing here can
  * write to Classroom, and nothing reads another student's work.
+ *
+ * calendar.readonly is what the week planner needs, and it is deliberately
+ * *not* in the backend's REQUIRED_SCOPE_GROUPS: unticking it on the Google
+ * screen must cost you the planner's knowledge of your lectures, never your
+ * Classroom connection. `/calendar/busy` does its own check and answers
+ * `granted: false` rather than failing. Asking for it here is what makes it
+ * grantable at all — enabling the API in the Cloud console only makes the
+ * permission exist; something still has to request it.
  */
 export const CLASSROOM_SCOPES = [
   "https://www.googleapis.com/auth/classroom.courses.readonly",
   "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
+  "https://www.googleapis.com/auth/calendar.readonly",
 ].join(" ");
 
 /** Set before the redirect, read after it. See lib/classroomHandoff.ts. */

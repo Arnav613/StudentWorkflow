@@ -36,6 +36,13 @@ class ConnectRequest(BaseModel):
 class ConnectionStatus(BaseModel):
     connected: bool
     needs_reconnect: bool
+    """A live grant that predates a permission the app now asks for.
+
+    Distinct from needs_reconnect, which means Google rejected the token and
+    nothing works. This one means everything works and one feature is dark —
+    two different sentences to put in front of the same Reconnect button.
+    """
+    needs_scopes: bool = False
     connected_at: str | None = None
     last_sync_at: str | None = None
     last_success_at: str | None = None
@@ -126,9 +133,16 @@ async def connection_status(
     token = tokens[0] if tokens else None
     s = state[0] if state else {}
 
+    # Compared against what the app asks for *today*, not what it asked for
+    # when the grant was made. A refresh token carries only the scopes it was
+    # issued with, so adding a scope to the consent request cannot reach
+    # anyone already connected — this is what notices that and says so.
+    granted = tuple(token.get("scopes") or ()) if token else ()
+
     return ConnectionStatus(
         connected=token is not None,
         needs_reconnect=bool(token and token.get("needs_reconnect")),
+        needs_scopes=bool(token and google.missing_optional_scopes(granted)),
         connected_at=token.get("connected_at") if token else None,
         last_sync_at=s.get("last_sync_at"),
         last_success_at=s.get("last_success_at"),

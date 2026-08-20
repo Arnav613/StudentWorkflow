@@ -27,23 +27,45 @@ SUBMISSIONS_SCOPE = (
     "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly"
 )
 
-# Read-only, and phase 07 asks for it without adding it to the required set
-# below. Existing refresh tokens carry only the scopes they were granted, so
-# adding it here would put every already-connected user into the reconnect
-# banner today for a feature that degrades perfectly well without it. Phase 09
-# adds it, and its announcement scopes, in one re-consent — see PLAN.md.
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 
 # Each group is one permission we need, listed as the names Google might use
 # for it. A grant satisfies us when it covers every group.
+#
+# Required means required: without these the app has nothing to sync, so
+# /classroom/connect refuses a grant that lacks one rather than storing a
+# connection every sync will fail behind.
 REQUIRED_SCOPE_GROUPS = (
     (COURSES_SCOPE,),
     (COURSEWORK_SCOPE, SUBMISSIONS_SCOPE),
 )
 
+# Asked for, and used when present, but never a condition of connecting.
+#
+# Calendar is not in REQUIRED above on purpose: unticking it on the Google
+# screen should cost you the planner's knowledge of your lectures, never your
+# Classroom connection, and /calendar/busy already answers `granted: false`
+# instead of failing. What it does do is raise the reconnect prompt for a
+# grant that predates it — which is how a new permission reaches an existing
+# user without a button of its own. Phase 09's scopes join this tuple.
+OPTIONAL_SCOPE_GROUPS = ((CALENDAR_SCOPE,),)
+
+
+def _missing(groups: tuple, scopes: tuple[str, ...]) -> list[tuple[str, ...]]:
+    return [g for g in groups if not any(s in scopes for s in g)]
+
 
 def missing_scope_groups(scopes: tuple[str, ...]) -> list[tuple[str, ...]]:
-    return [g for g in REQUIRED_SCOPE_GROUPS if not any(s in scopes for s in g)]
+    return _missing(REQUIRED_SCOPE_GROUPS, scopes)
+
+
+def missing_optional_scopes(scopes: tuple[str, ...]) -> list[tuple[str, ...]]:
+    """Permissions the app now asks for that this grant was issued before.
+
+    Drives the reconnect prompt, not an error. A grant missing one of these
+    works — it just works with less.
+    """
+    return _missing(OPTIONAL_SCOPE_GROUPS, scopes)
 
 
 class ReconnectRequired(Exception):

@@ -39,12 +39,15 @@ export default function ClassroomPanel({
 
   const connected = status?.connected ?? false;
   const needsReconnect = status?.needs_reconnect ?? false;
+  // A live grant issued before the app asked for Calendar. Everything works;
+  // the week planner just cannot see which hours are already taken.
+  const needsScopes = status?.needs_scopes ?? false;
 
   // Connected and working: nothing. The exception is a failure, which is
   // still said out loud — a sync that silently stopped is indistinguishable
   // from a Classroom with no new work in it, and those are very different
   // facts about your week.
-  if (connected && !needsReconnect) {
+  if (connected && !needsReconnect && !needsScopes) {
     const failure = error ?? status?.last_error;
     if (!failure || busy) return null;
     return (
@@ -56,17 +59,37 @@ export default function ClassroomPanel({
     <section className="panel">
       <h2>Google Classroom</h2>
 
-      {needsReconnect ? (
+      {needsReconnect || needsScopes ? (
         <div className="banner">
-          <strong>Reconnect Classroom.</strong>{" "}
-          <span className="muted">
-            Google expires this app&rsquo;s permission every seven days while it
-            is unpublished. Your tasks and sign-in are untouched — only new
-            coursework has stopped arriving.
-          </span>
+          {/* One button, two reasons to press it. Expiry means nothing is
+              arriving; a missing scope means everything is arriving and one
+              feature is dark. Saying "reconnect" for both and explaining
+              neither would make the weekly prompt and the one-off prompt
+              indistinguishable, and the weekly one is the one people learn to
+              dismiss. */}
+          {needsReconnect ? (
+            <>
+              <strong>Reconnect Classroom.</strong>{" "}
+              <span className="muted">
+                Google expires this app&rsquo;s permission every seven days
+                while it is unpublished. Your tasks and sign-in are untouched —
+                only new coursework has stopped arriving.
+              </span>
+            </>
+          ) : (
+            <>
+              <strong>One more permission.</strong>{" "}
+              <span className="muted">
+                The week planner can work around your lectures and meetings if
+                it may read your calendar — times only, never what the events
+                are. Reconnect to include it. Nothing else changes, and
+                declining it costs you nothing but that.
+              </span>
+            </>
+          )}
           <div className="row">
             <button onClick={connect} disabled={Boolean(busy)}>
-              Reconnect
+              {needsReconnect ? "Reconnect" : "Allow calendar"}
             </button>
           </div>
         </div>

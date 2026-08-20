@@ -237,12 +237,15 @@ export default function WeekPage({
 
       {/* Said once, quietly, and only when it is true. The planner works
           without the calendar; it just assumes more of the day is free than
-          it really is, and someone should know that is the assumption. */}
+          it really is, and someone should know that is the assumption.
+
+          No button. Granting the permission is not this screen's job — the
+          Classes tab raises it as part of the one reconnect prompt the app
+          already has, so a permission is asked for in one place rather than
+          wherever it happens to be missed. */}
       {calendar === "off" || (calendar && !calendar.granted) ? (
         <p className="muted small notice">
           Planning without your calendar, so every waking hour counts as free.
-          Lectures and meetings will be taken into account once Calendar access
-          is granted.
         </p>
       ) : null}
 

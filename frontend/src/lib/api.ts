@@ -58,6 +58,13 @@ export const getMe = () => api<{ id: string; email: string }>("/me");
 export type ConnectionStatus = {
   connected: boolean;
   needs_reconnect: boolean;
+  /**
+   * Connected and working, but the grant predates a permission the app now
+   * asks for — today, Calendar. Not a failure: one feature is dark, and the
+   * fix is the same Reconnect press, so it gets the same button and different
+   * words.
+   */
+  needs_scopes: boolean;
   connected_at: string | null;
   last_sync_at: string | null;
   last_success_at: string | null;
