@@ -996,9 +996,10 @@ button.link.danger:hover:not(:disabled) {
  */
 .task-form {
   display: grid;
-  /* The time column is wider than the 8rem the native input needed: the
-     picker carries a clock, a caret and "11:59 PM" between them. */
-  grid-template-columns: 1fr 11rem 9.5rem 11rem auto;
+  /* Notes, due, time, estimate, class, submit. The time and estimate columns
+     are wider than the 8rem the native inputs needed: each picker carries an
+     icon, a caret and "11:59 PM" or "1h 30m" between them. */
+  grid-template-columns: 1fr 11rem 9.5rem 9.5rem 11rem auto;
   gap: 0.6rem;
   align-items: end;
 }
@@ -1726,6 +1727,15 @@ button.link.danger:hover:not(:disabled) {
   color: var(--muted);
 }
 
+/* A caption over a control, matching the Column label beside it. Capped
+   rather than full-width: a card is not a form, and an estimate picker
+   stretched across one reads as the card's primary action. */
+.detail-field {
+  display: flex;
+  flex-direction: column;
+  max-width: 12rem;
+}
+
 .checklist {
   margin: 0;
 }
@@ -2174,15 +2184,13 @@ button.link.danger:hover:not(:disabled) {
   min-width: 10rem;
 }
 
-.routine-length,
-.estimate-field {
+.routine-length {
   display: flex;
   align-items: center;
   gap: 0.35rem;
 }
 
-.routine-length input,
-.estimate-field input {
+.routine-length input {
   width: 5rem;
 }
 

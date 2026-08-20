@@ -13,6 +13,7 @@ import {
 import { formatEstimate } from "../lib/schedule";
 import { toast, undoable } from "../lib/toast";
 import ChecklistEditor from "./ChecklistEditor";
+import EstimatePicker from "./EstimatePicker";
 
 /**
  * One card on the board.
@@ -48,6 +49,29 @@ export default function TaskCard({
 
   const overdue = isOverdue(task);
   const archiveIn = daysUntilArchive(task);
+
+  /**
+   * Change the estimate after the fact.
+   *
+   * The whole point of the control being here as well as on the form: a task
+   * Classroom imported never had one, and the only moment anyone actually
+   * knows how long a reading takes is after opening it. An estimate you could
+   * only set at creation is an estimate nobody corrects.
+   *
+   * Straight to the database and then a refresh, rather than the optimistic
+   * path a drag gets. This is a deliberate one-off choice from a list, not a
+   * direct-manipulation gesture, and a picker that closed on the old value
+   * for 200ms would be less confusing than a card that snapped back.
+   */
+  async function setEstimate(minutes: number | null) {
+    if (minutes === task.estimate_minutes) return;
+    try {
+      await db.updateTask(task.id, { estimate_minutes: minutes });
+      onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not save that estimate", "error");
+    }
+  }
 
   async function remove() {
     if (onRemove) return onRemove(task);
@@ -163,6 +187,16 @@ export default function TaskCard({
               ))}
             </select>
           </label>
+
+          {/* A div, not a label: the control is a button, and a label
+              wrapping one hijacks its click. */}
+          <div className="detail-field">
+            <span className="label">Takes about</span>
+            <EstimatePicker
+              value={task.estimate_minutes}
+              onChange={(m) => void setEstimate(m)}
+            />
+          </div>
 
           <ChecklistEditor taskId={task.id} userId={userId} />
 
