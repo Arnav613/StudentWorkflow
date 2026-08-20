@@ -60,12 +60,12 @@ export function snapMinutes(minutes: number): number {
 }
 
 /**
- * The longest single sitting, and the break that follows one.
+ * The longest single sitting the planner will *suggest*, and the break after.
  *
- * Ninety minutes is where a session stops being work and starts being time at
- * a desk. Splitting without a gap would be theatre — two blocks touching end
- * to end are one long block with a line drawn through it — so the break is
- * real time the planner gives away.
+ * No longer a rule about splitting — nothing splits a task any more; see the
+ * placement loop in planWeek. This survives as the length a task claims when
+ * it has no estimate at all and something has to be assumed, and as the point
+ * past which a block is worth a break in the UI.
  */
 export const MAX_SESSION_MINUTES = 90;
 export const BREAK_MINUTES = 15;
@@ -578,29 +578,33 @@ export function planWeek({
       }
 
       /*
-       * Every session starts on the half hour and lasts a whole number of
-       * them.
+       * Every session starts on the half hour, and runs for exactly as long
+       * as the task was estimated to take.
        *
        * Snapping the start forward can cost a few minutes off the front of a
        * window — the gap between a lecture ending at 10:50 and the next clean
        * slot at 11:00 is not a study session anyway, and the alternative was a
-       * week of 10:50 and 5:18 starts that read as noise. The length rounds to
-       * the nearest half hour rather than up, so an estimate is never quietly
-       * inflated past what was typed.
+       * week of 10:50 and 5:18 starts that read as noise. The *end* is left
+       * where the estimate puts it: an hour of work is an hour, and rounding
+       * it out to the grid would either invent time or quietly drop some.
        */
       const start = snapUp(w.start);
       if (start >= limit) continue;
 
-      // Both ends on the grid, not just the start: a block running 9:00 to
-      // 10:50 because that is when the lecture begins is the same unreadable
-      // number in the other corner of the card.
-      const room =
-        Math.floor((limit - start) / MINUTE / SLOT_MINUTES) * SLOT_MINUTES;
-      // A gap below one slot is a walk across campus, not a study session.
-      if (room < SLOT_MINUTES) continue;
+      /*
+       * All of it, in one sitting, or none of it here.
+       *
+       * The planner used to fill whatever room a window had and carry the
+       * remainder into the next one, which is how an hour of work became
+       * 6:30–7 on Thursday and 8–8:30 the same evening: two half-blocks of one
+       * task, with the interruption between them doing no work at all. A task
+       * is a thing you sit down and do. If the only gap before the deadline is
+       * shorter than the job, the honest answer is the rail, not a job cut in
+       * half to make the week look full.
+       */
+      if ((limit - start) / MINUTE + 1e-9 < remaining) continue;
 
-      const want = Math.min(remaining, MAX_SESSION_MINUTES);
-      const length = Math.min(snapMinutes(want), room);
+      const length = remaining;
       const end = start + length * MINUTE;
 
       blocks.push({
@@ -611,11 +615,8 @@ export function planWeek({
         locked: false,
       });
 
-      remaining -= length;
-      // The break is only owed if this sitting hit the cap and there is more
-      // to come; finishing a task does not earn a fifteen-minute hole.
-      const gap = remaining > 0 && length >= MAX_SESSION_MINUTES ? BREAK_MINUTES : 0;
-      w.start = Math.min(end + gap * MINUTE, w.end);
+      remaining = 0;
+      w.start = Math.min(end, w.end);
     }
 
     if (remaining > 0) {

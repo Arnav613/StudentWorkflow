@@ -19,8 +19,9 @@ import { getCalendar } from "../lib/api";
 import { errorText, toast } from "../lib/toast";
 import { formatDue } from "../lib/board";
 import {
-  MAX_SESSION_MINUTES,
   PLAN_DAYS,
+  SLOT_MINUTES,
+  addDays,
   blockMinutes,
   byDay,
   classMedians,
@@ -29,7 +30,6 @@ import {
   hhmmOf,
   planDays,
   planWeek,
-  snapMinutes,
   timeForSlot,
   unscheduled,
 } from "../lib/schedule";
@@ -84,6 +84,7 @@ export default function WeekPage({
     planFrom,
     refresh,
     setPlanBlocks,
+    setTasks,
     userId,
   } = store;
   const [generating, setGenerating] = useState(false);
@@ -316,6 +317,54 @@ export default function WeekPage({
     );
     await commitMove(block, next);
     askScope(block, next);
+  }
+
+  /**
+   * The other end of the block, changed the same way — and the estimate with
+   * it.
+   *
+   * Only the start was editable here, which made the card able to say when
+   * work begins and never how long it runs. Dragging the end of a block is
+   * the most direct way anyone has ever said "this will take longer than you
+   * thought", and the estimate is what that sentence is about: nothing splits
+   * a task any more, so this block's length *is* the task's estimate, and
+   * writing one without the other would leave Replan undoing the correction
+   * the next time it ran.
+   *
+   * A routine or a lecture has no estimate to carry, and just gets longer.
+   */
+  async function resize(block: PlanBlock, hhmm: string) {
+    if (!hhmm) return;
+    const start = new Date(block.starts_at);
+    const [h, m] = hhmm.split(":").map(Number);
+    let end = new Date(
+      start.getFullYear(),
+      start.getMonth(),
+      start.getDate(),
+      h,
+      m,
+    );
+    // 11:30 pm to 12:30 am is a real, if unwise, evening. An end at or before
+    // the start means the next day, not a mistake to refuse.
+    if (end.getTime() <= start.getTime()) end = addDays(end, 1);
+
+    const minutes = (end.getTime() - start.getTime()) / 60_000;
+    await commitMove(block, start, minutes);
+    if (!block.task_id) return;
+
+    const task = taskById.get(block.task_id);
+    if (!task) return;
+    const previous = tasks;
+    setTasks((prev) =>
+      prev.map((t) => (t.id === task.id ? { ...t, estimate_minutes: minutes } : t)),
+    );
+    try {
+      const saved = await db.updateTask(task.id, { estimate_minutes: minutes });
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? saved : t)));
+    } catch (e) {
+      setTasks(previous);
+      toast(errorText(e, "Could not save that estimate"), "error");
+    }
   }
 
   /**
@@ -764,6 +813,7 @@ export default function WeekPage({
                       }
                       cls={classById}
                       onRetime={(t) => void retime(block, t)}
+                      onResize={(t) => void resize(block, t)}
                       onClear={() => void clear(block)}
                       onOpenClass={onOpenClass}
                     />
@@ -844,12 +894,13 @@ function inOrder(blocks: PlanBlock[]): PlanBlock[] {
 /**
  * How long a task claims when it is dragged onto a day.
  *
- * One sitting, not the whole job. Dragging a six-hour essay onto Thursday
- * should book Thursday evening, not all of Thursday — and the remainder stays
- * in the rail, visible, where Replan can find hours for it.
+ * The whole job. This used to book one ninety-minute sitting and leave the
+ * remainder in the rail, which is the same half-a-task the planner used to
+ * produce — and worse here, because you dropped the essay on Thursday and the
+ * app decided only part of it was going there.
  */
 function sitting(minutes: number): number {
-  return Math.min(snapMinutes(minutes), MAX_SESSION_MINUTES);
+  return Math.max(SLOT_MINUTES, Math.round(minutes));
 }
 
 /** `gap:3:2` / `card:3:2` / `tail:3` → which column, and which position in it. */
@@ -938,6 +989,20 @@ function DayColumn({ day, children }: { day: Date; children: React.ReactNode }) 
  * ever written back to the calendar, so skipping a class does not email
  * anybody.
  */
+/**
+ * Stop a drag from starting, but only on an actual control.
+ *
+ * Hung on the rows inside a block card, which stretch the full width of it.
+ * The alternative — the row itself refusing the gesture — turned every gap in
+ * those rows into dead space on a card that drags from everywhere else.
+ */
+function keepControlsOutOfTheDrag(e: React.PointerEvent) {
+  const el = e.target as HTMLElement | null;
+  if (el?.closest("button, input, select, textarea, a, [role='button']")) {
+    e.stopPropagation();
+  }
+}
+
 function BlockCard({
   block,
   slot,
@@ -946,6 +1011,7 @@ function BlockCard({
   routine,
   cls,
   onRetime,
+  onResize,
   onClear,
   onOpenClass,
 }: {
@@ -956,6 +1022,7 @@ function BlockCard({
   routine: Routine | null;
   cls: Map<string, Class>;
   onRetime: (hhmm: string) => void;
+  onResize: (hhmm: string) => void;
   onClear: () => void;
   onOpenClass: (id: string) => void;
 }) {
@@ -969,6 +1036,7 @@ function BlockCard({
   const hue = routine || event ? "hue-none" : klass ? `hue-${klass.color}` : "hue-none";
   const title = task?.title ?? block.title ?? routine?.title ?? "Untitled";
   const start = new Date(block.starts_at);
+  const end = new Date(block.ends_at);
   const past = Date.parse(block.ends_at) <= Date.now();
 
   return (
@@ -995,31 +1063,52 @@ function BlockCard({
           the clock and the buttons — stop the gesture before it starts. The
           five-pixel activation distance already lets an ordinary click
           through; this covers the click that wanders.
+
+          The opting-out is per control, not per row. These rows are full
+          width, so a row that swallowed the gesture made the blank space
+          beside the clock and to the left of Remove inert — a large part of
+          the card that looked draggable and was not.
         */}
         <div
           className="row block-time"
-          onPointerDown={(e) => e.stopPropagation()}
+          onPointerDown={keepControlsOutOfTheDrag}
         >
           {/*
-            The time is the control.
+            The time is the control. Both ends of it.
 
             There was a Move button beside it that opened a picker showing the
             same number the card was already displaying — two things saying one
             thing, and the editable one was the one that did not look editable.
+            The range then read as one control that only moved the start, which
+            had the same fault one layer down: the card showed a time you could
+            not change sitting next to one you could. So it is two pickers and
+            a dash, and the end one is how long the work takes.
           */}
           <TimePicker
             value={hhmmOf(start.getHours() * 60 + start.getMinutes())}
             compact
-            display={`${clockOf(block.starts_at)} – ${clockOf(block.ends_at)}`}
+            display={clockOf(block.starts_at)}
             onChange={onRetime}
           />
+          <span className="muted block-dash" aria-hidden="true">
+            –
+          </span>
+          <TimePicker
+            value={hhmmOf(end.getHours() * 60 + end.getMinutes())}
+            compact
+            display={clockOf(block.ends_at)}
+            onChange={onResize}
+          />
+          <span className="muted small block-length">
+            {formatMinutes(blockMinutes(block))}
+          </span>
         </div>
 
         <span className="block-title">{title}</span>
 
         <div
           className="row block-actions"
-          onPointerDown={(e) => e.stopPropagation()}
+          onPointerDown={keepControlsOutOfTheDrag}
         >
           {event ? (
             <span className="muted small">Calendar</span>

@@ -2123,9 +2123,29 @@ button.link.danger:hover:not(:disabled) {
   cursor: grabbing;
 }
 
+/*
+ * Start, dash, end, and how long that comes to.
+ *
+ * It wraps, because a nine-rem column cannot always hold "6:30 pm – 7:30 pm
+ * 1h" on one line and the alternative to wrapping is an ellipsis eating the
+ * end time — the half of the range that was just made editable.
+ */
 .block-time {
-  gap: 0.35rem;
+  gap: 0.2rem;
   min-width: 0;
+  flex-wrap: wrap;
+}
+
+.block-dash {
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+/* The length is the reason the end time is a control, so it sits with them —
+   quieter than either, since it is derived from the two and never typed. */
+.block-length {
+  opacity: 0.65;
+  white-space: nowrap;
 }
 
 /*
@@ -2138,7 +2158,9 @@ button.link.danger:hover:not(:disabled) {
  */
 .picker-compact {
   min-width: 0;
-  flex: 1 1 auto;
+  /* Sized to the time it holds. Two of these share the row now, and `1 1 auto`
+     had them splitting the width evenly and truncating in step. */
+  flex: 0 1 auto;
 }
 
 .picker-compact > .picker-trigger {
@@ -2151,6 +2173,13 @@ button.link.danger:hover:not(:disabled) {
   border-radius: var(--r-sm, 5px);
   width: auto;
   cursor: pointer;
+}
+
+/* Only the first one hangs off the card's left edge; the negative margin is
+   there to line the row up with the title, not to close the gap around the
+   dash. */
+.block-time > .picker-compact:not(:first-child) > .picker-trigger {
+  margin-left: 0;
 }
 
 .picker-compact > .picker-trigger:hover,

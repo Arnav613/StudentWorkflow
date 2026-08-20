@@ -14,8 +14,8 @@ import { useEffect, useRef, useState } from "react";
  * should have to reach by typing.
  *
  * The value is `HH:MM` in 24-hour form, exactly what the input produced, so
- * dueAtFrom is untouched. What is *displayed* follows the browser's locale,
- * like every other time in the app.
+ * dueAtFrom is untouched. What is *displayed* is twelve-hour, like every other
+ * time in the app — see `label`.
  */
 
 /** 00:00, 00:30, … 23:30, then 23:59. */
@@ -27,11 +27,21 @@ const SLOTS: string[] = [
   "23:59",
 ];
 
+/*
+ * Twelve-hour, stated rather than inherited from the locale — the same rule
+ * and the same reasoning as clockOf in lib/schedule. A browser set to a
+ * 24-hour locale rendered the cards in one convention and this list in the
+ * other, so picking "18:00" from the dropdown made a card that said 6 pm.
+ */
 function label(value: string): string {
   const m = /^(\d{2}):(\d{2})$/.exec(value);
   if (!m) return "No time";
   const d = new Date(2000, 0, 1, Number(m[1]), Number(m[2]));
-  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
 export default function TimePicker({

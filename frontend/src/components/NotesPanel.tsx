@@ -14,7 +14,12 @@ function message(e: unknown): string {
 function when(iso: string): string {
   const d = new Date(iso);
   const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
-  if (days === 0) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (days === 0)
+    return d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
   if (days === 1) return "Yesterday";
   if (days < 7) return `${days}d ago`;
   return d.toLocaleDateString([], { day: "numeric", month: "short" });

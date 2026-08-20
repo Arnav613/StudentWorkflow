@@ -95,7 +95,11 @@ function hasTime(d: Date): boolean {
 
 function clockOf(d: Date): string {
   return d
-    .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    .toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
     .replace(":00", "");
 }
 
@@ -161,7 +165,9 @@ export function formatDueExact(due: string | null): string {
     day: "numeric",
     month: "long",
     year: "numeric",
-    ...(hasTime(d) ? { hour: "numeric", minute: "2-digit" } : {}),
+    ...(hasTime(d)
+      ? { hour: "numeric" as const, minute: "2-digit" as const, hour12: true }
+      : {}),
   });
 }
 
