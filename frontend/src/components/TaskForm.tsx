@@ -20,6 +20,7 @@ export default function TaskForm({ store }: { store: DataStore }) {
   const [time, setTime] = useState("");
   const [classId, setClassId] = useState("");
   const [description, setDescription] = useState("");
+  const [estimate, setEstimate] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
@@ -33,12 +34,14 @@ export default function TaskForm({ store }: { store: DataStore }) {
         description: description.trim() || null,
         due_at: dueAtFrom(date, time),
         class_id: classId || null,
+        estimate_minutes: estimateFrom(estimate),
       });
       toast("Task added", "success");
       setTitle("");
       setDate("");
       setTime("");
       setDescription("");
+      setEstimate("");
       await refresh();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not add task", "error");
@@ -86,6 +89,28 @@ export default function TaskForm({ store }: { store: DataStore }) {
           <span className="label">Time (optional)</span>
           <TimePicker value={time} disabled={!date} onChange={setTime} />
         </div>
+        {/*
+          Optional, and left blank far more often than not. An unestimated
+          task is planned against its class's median and says so in italics on
+          the card — which is the honest version of a guess, and better than a
+          required field that teaches everyone to type 60.
+        */}
+        <label className="field">
+          <span className="label">Takes about (optional)</span>
+          <span className="estimate-field">
+            <input
+              type="number"
+              min={5}
+              max={960}
+              step={5}
+              inputMode="numeric"
+              placeholder="—"
+              value={estimate}
+              onChange={(e) => setEstimate(e.target.value)}
+            />
+            <span className="muted small">min</span>
+          </span>
+        </label>
         <div className="field">
           <span className="label">Class</span>
           <ClassPicker
@@ -121,6 +146,20 @@ export default function TaskForm({ store }: { store: DataStore }) {
  * the user's own zone; toISOString then gives Postgres proper UTC for the
  * timestamptz column.
  */
+/**
+ * Minutes, or null for unestimated — never zero.
+ *
+ * The difference matters all the way down to the check constraint in
+ * migration 0005: null means "I have not said", which the planner answers
+ * with a visible guess, and zero would mean "this takes no time", which it
+ * would answer by scheduling nothing and then losing the afternoon.
+ */
+function estimateFrom(raw: string): number | null {
+  const n = Number(raw.trim());
+  if (!raw.trim() || !Number.isFinite(n) || n <= 0) return null;
+  return Math.min(960, Math.round(n));
+}
+
 function dueAtFrom(date: string, time: string): string | null {
   if (!date) return null;
   return new Date(`${date}T${time || "00:00"}`).toISOString();

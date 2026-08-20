@@ -15,6 +15,7 @@ from app.core.config import get_settings
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 CLASSROOM = "https://classroom.googleapis.com/v1"
+CALENDAR = "https://www.googleapis.com/calendar/v3"
 
 COURSES_SCOPE = "https://www.googleapis.com/auth/classroom.courses.readonly"
 COURSEWORK_SCOPE = "https://www.googleapis.com/auth/classroom.coursework.me.readonly"
@@ -25,6 +26,13 @@ COURSEWORK_SCOPE = "https://www.googleapis.com/auth/classroom.coursework.me.read
 SUBMISSIONS_SCOPE = (
     "https://www.googleapis.com/auth/classroom.student-submissions.me.readonly"
 )
+
+# Read-only, and phase 07 asks for it without adding it to the required set
+# below. Existing refresh tokens carry only the scopes they were granted, so
+# adding it here would put every already-connected user into the reconnect
+# banner today for a feature that degrades perfectly well without it. Phase 09
+# adds it, and its announcement scopes, in one re-consent — see PLAN.md.
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 
 # Each group is one permission we need, listed as the names Google might use
 # for it. A grant satisfies us when it covers every group.
@@ -194,3 +202,58 @@ def due_at(coursework: dict) -> datetime | None:
         t.get("minutes", 0),
         tzinfo=timezone.utc,
     )
+
+
+# ---------------------------------------------------------------------------
+# Calendar — read-only, and narrower than read-only.
+# ---------------------------------------------------------------------------
+
+
+async def list_busy(token: str, start: datetime, end: datetime) -> list[dict]:
+    """Which intervals are already taken, between two instants.
+
+    freeBusy, not events.list, and the difference is the entire point. The
+    planner needs to know that Tuesday 2–4pm is gone; it does not need to know
+    it is gone because of a doctor's appointment. freeBusy answers exactly the
+    first question and is structurally incapable of answering the second, so
+    no event title, description, location or attendee ever leaves Google — not
+    because this code chooses not to log them, but because it never receives
+    them.
+
+    There is no write path in this file. A calendar the app cannot write to is
+    a calendar it cannot corrupt, and a last-minute meeting then needs
+    reconciling in one place instead of two.
+    """
+    async with httpx.AsyncClient(
+        base_url=CALENDAR,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    ) as http:
+        res = await http.post(
+            "/freeBusy",
+            json={
+                "timeMin": start.astimezone(timezone.utc).isoformat(),
+                "timeMax": end.astimezone(timezone.utc).isoformat(),
+                # "primary" is the calendar the user actually lives in.
+                # Enumerating every subscribed calendar would drag in holidays,
+                # birthdays and a shared timetable nobody meant to plan around.
+                "items": [{"id": "primary"}],
+            },
+        )
+
+    if res.status_code == 401:
+        raise ReconnectRequired(res.text)
+    if res.status_code == 403:
+        raise ClassroomError(
+            "Calendar refused the request (403). The Calendar API may not be "
+            f"enabled for this project: {res.text}"
+        )
+    if res.status_code >= 400:
+        raise ClassroomError(f"freeBusy -> {res.status_code}: {res.text}")
+
+    body = res.json()
+    calendar = (body.get("calendars") or {}).get("primary") or {}
+    # Google reports per-calendar errors inside a 200. A "notFound" here means
+    # the account has no primary calendar, which is not an error worth raising
+    # — it is an empty week, and the planner handles that fine.
+    return calendar.get("busy", [])

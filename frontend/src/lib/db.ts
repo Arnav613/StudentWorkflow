@@ -19,9 +19,12 @@ import type {
   ChecklistItem,
   ClassLink,
   HealthTask,
+  PlanBlock,
+  Routine,
   Task,
   TaskStatus,
 } from "./types";
+import type { PlannedBlock } from "./schedule";
 
 function unwrap<T>({ data, error }: { data: T | null; error: unknown }): T {
   if (error) throw error;
@@ -184,6 +187,7 @@ export async function createTask(input: {
   due_at?: string | null;
   class_id?: string | null;
   status?: TaskStatus;
+  estimate_minutes?: number | null;
 }): Promise<Task> {
   // source is left to the column default of 'manual'. The backend sync is the
   // only thing that ever writes 'classroom', and it writes it explicitly.
@@ -193,7 +197,16 @@ export async function createTask(input: {
 export async function updateTask(
   id: string,
   patch: Partial<
-    Pick<Task, "title" | "description" | "due_at" | "class_id" | "status" | "position">
+    Pick<
+      Task,
+      | "title"
+      | "description"
+      | "due_at"
+      | "class_id"
+      | "status"
+      | "position"
+      | "estimate_minutes"
+    >
   >,
 ): Promise<Task> {
   return unwrap(
@@ -346,4 +359,149 @@ export function normaliseUrl(raw: string): string {
   const trimmed = raw.trim();
   if (!/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return `https://${trimmed}`;
   return /^https?:/i.test(trimmed) ? trimmed : `https://${trimmed.replace(/^[^:]+:\/*/, "")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Routines — phase 07. See migration 0005.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every routine, active or not.
+ *
+ * Inactive ones are still fetched because the only place they can be turned
+ * back on is the list that would otherwise hide them — filtering here would
+ * make "paused" indistinguishable from "deleted".
+ */
+export async function listRoutines(): Promise<Routine[]> {
+  return unwrap(
+    await supabase.from("routines").select("*").order("time_of_day"),
+  );
+}
+
+export async function createRoutine(input: {
+  user_id: string;
+  title: string;
+  weekday: number | null;
+  time_of_day: string;
+  duration_minutes: number;
+}): Promise<Routine> {
+  return unwrap(await supabase.from("routines").insert(input).select().single());
+}
+
+export async function updateRoutine(
+  id: string,
+  patch: Partial<
+    Pick<Routine, "title" | "weekday" | "time_of_day" | "duration_minutes" | "active">
+  >,
+): Promise<Routine> {
+  return unwrap(
+    await supabase.from("routines").update(patch).eq("id", id).select().single(),
+  );
+}
+
+export async function deleteRoutine(id: string): Promise<void> {
+  const { error } = await supabase.from("routines").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Plan blocks
+// ---------------------------------------------------------------------------
+
+/**
+ * The plan from a given instant onward.
+ *
+ * Past blocks are not fetched and not shown. The week grid is a decision about
+ * what happens next; yesterday's blocks are neither actionable nor
+ * interesting, and keeping them on screen would mean the first two columns of
+ * every week were history.
+ *
+ * They are not deleted either — regeneration only ever touches the future, so
+ * a plan you kept to is still on the row if the forecast in phase 08 wants it.
+ */
+export async function listPlanBlocks(from: Date): Promise<PlanBlock[]> {
+  return unwrap(
+    await supabase
+      .from("plan_blocks")
+      .select("*")
+      .gte("ends_at", from.toISOString())
+      .order("starts_at"),
+  );
+}
+
+/**
+ * Replace the generated part of the plan.
+ *
+ * Two writes, in this order and no other: every *unlocked* block from `from`
+ * onward is deleted, then the freshly planned unlocked blocks are inserted.
+ * Locked blocks are never in either statement — they were placed by a person,
+ * the planner was given them as input, and it has already planned around them.
+ *
+ * Delete-then-insert rather than a diff. The scheduler is deterministic and
+ * plans the whole horizon at once, so there is no stable identity to diff
+ * against: a block is not "the same block" moved, it is a different decision
+ * about the same task. Reconciling those would be a merge algorithm nobody
+ * asked for, and it would be the second implementation of the scheduler.
+ */
+export async function replacePlan(
+  userId: string,
+  from: Date,
+  blocks: PlannedBlock[],
+): Promise<PlanBlock[]> {
+  const { error: delError } = await supabase
+    .from("plan_blocks")
+    .delete()
+    .eq("locked", false)
+    .gte("ends_at", from.toISOString());
+  if (delError) throw delError;
+
+  const fresh = blocks.filter((b) => !b.locked);
+  if (!fresh.length) return [];
+
+  return unwrap(
+    await supabase
+      .from("plan_blocks")
+      .insert(fresh.map((b) => ({ ...b, user_id: userId })))
+      .select(),
+  );
+}
+
+/**
+ * Move or resize a block by hand — which locks it, always.
+ *
+ * `locked` is not a checkbox the user has to find. Touching a block *is* the
+ * statement that this one is yours now, and the next regeneration plans
+ * around it. Making it opt-in would mean every manual edit survives until the
+ * moment you press the button that silently undoes all of them.
+ */
+export async function moveBlock(
+  id: string,
+  starts_at: string,
+  ends_at: string,
+): Promise<PlanBlock> {
+  return unwrap(
+    await supabase
+      .from("plan_blocks")
+      .update({ starts_at, ends_at, locked: true })
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
+/** Hand a locked block back to the planner. */
+export async function unlockBlock(id: string): Promise<PlanBlock> {
+  return unwrap(
+    await supabase
+      .from("plan_blocks")
+      .update({ locked: false })
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
+export async function deleteBlock(id: string): Promise<void> {
+  const { error } = await supabase.from("plan_blocks").delete().eq("id", id);
+  if (error) throw error;
 }

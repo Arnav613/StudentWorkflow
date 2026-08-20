@@ -2017,3 +2017,209 @@ button.link.danger:hover:not(:disabled) {
     font-size: 1.35rem;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Phase 07: the week plan
+   ---------------------------------------------------------------------------
+   Seven columns of the same sunken track the board columns use, because they
+   are the same object — a space things sit in — and giving the week its own
+   visual language would make two screens that share a drag gesture look like
+   two apps.
+   -------------------------------------------------------------------------*/
+
+.week-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.6rem;
+  align-items: start;
+}
+
+/* Narrower than a board column and holding smaller cards, so the padding
+   comes down with it or seven columns are mostly padding. */
+.column.day {
+  min-height: 9rem;
+  padding: 0.55rem;
+  --c: var(--border-strong);
+}
+
+/* Today is where you actually are. One tinted column, not seven labels to
+   read. */
+.column.day.today {
+  --c: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--sunken));
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.column.day > h2 {
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.day-empty {
+  margin: 0.4rem 0.15rem;
+}
+
+.blocks {
+  margin: 0;
+  gap: 0.4rem;
+}
+
+/*
+ * A block is a card, one size down. It carries its class's colour on the left
+ * edge exactly like the task card it came from, so the same essay is the same
+ * colour on both screens.
+ */
+.list > li.card.block {
+  padding: 0.45rem 0.55rem;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+
+.block-time {
+  gap: 0.35rem;
+}
+
+.block-title {
+  font-weight: 500;
+  line-height: 1.3;
+  /* Two lines, then an ellipsis. A seven-column grid has no room for a title
+     that pushes the rest of Thursday down the page. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.block-actions {
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.block-retime {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+  margin-top: 0.15rem;
+}
+
+/* A locked block is the one thing Replan will not touch. A solid left edge in
+   the accent says "someone decided this" without another chip in a column
+   that is already short of width — the "Kept" tag says the rest. */
+.list > li.card.block.locked {
+  border-left-width: 4px;
+  border-left-color: var(--accent);
+}
+
+/* Routines are not work and do not read as work: no shadow, no grab cursor,
+   a hatched-looking flat surface that says "this hour is gone" rather than
+   "do this". */
+.list > li.card.block.routine {
+  background: var(--sunken);
+  border-style: dashed;
+  border-left-style: dashed;
+  box-shadow: none;
+  cursor: default;
+  color: var(--muted);
+}
+
+/* ---- The unplanned rail ------------------------------------------------- */
+
+.list.unplaced > li {
+  gap: 0.5rem;
+  padding: 0.4rem 0.15rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.list.unplaced > li:last-child {
+  border-bottom: 0;
+}
+
+/* A guessed number, in italics, everywhere one appears. The planner is
+   allowed to invent an estimate; it is not allowed to let the invention look
+   like something you said. */
+.guessed {
+  font-style: italic;
+}
+
+/* ---- Routines ----------------------------------------------------------- */
+
+.routine-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.9rem;
+}
+
+.routine-form > input[type="text"],
+.routine-form > input:not([type]) {
+  flex: 1 1 12rem;
+  min-width: 10rem;
+}
+
+.routine-length,
+.estimate-field {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.routine-length input,
+.estimate-field input {
+  width: 5rem;
+}
+
+.list.routine-list > li {
+  gap: 0.5rem;
+  padding: 0.4rem 0.15rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.list.routine-list > li:last-child {
+  border-bottom: 0;
+}
+
+/* Dimmed, not hidden. A paused routine that vanished would be
+   indistinguishable from a deleted one, and the only place to resume it is
+   this list. */
+.list.routine-list > li.paused {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+/*
+ * Seven columns need a wide screen and gracefully become a scrolling strip
+ * rather than seven unreadable slivers. Below that, one column per day
+ * stacked — a phone reads a week as a list, which is what a phone calendar
+ * does too.
+ */
+@media (max-width: 68rem) {
+  .week {
+    grid-template-columns: repeat(7, minmax(9.5rem, 1fr));
+    overflow-x: auto;
+    padding-bottom: 0.4rem;
+  }
+}
+
+@media (max-width: 40rem) {
+  .week {
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+  }
+  .column.day {
+    min-height: 0;
+  }
+  .week-head button {
+    width: 100%;
+  }
+}

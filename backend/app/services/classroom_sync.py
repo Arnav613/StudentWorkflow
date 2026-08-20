@@ -71,8 +71,8 @@ def _day(value: str | None) -> str | None:
         return None
 
 
-async def get_access_token(user_id: str) -> str:
-    """The stored refresh token, spent for a live access token.
+async def get_access_grant(user_id: str) -> google.AccessToken:
+    """The stored refresh token, spent for a live access token and its scopes.
 
     Raises ReconnectRequired for every case the user can fix by pressing
     Connect again — expired grant, revoked access, or a key rotation that
@@ -103,7 +103,18 @@ async def get_access_token(user_id: str) -> str:
         },
         user_id=db.eq(user_id),
     )
-    return access.token
+    return access
+
+
+async def get_access_token(user_id: str) -> str:
+    """The token alone, for the callers that do not care what it can do.
+
+    A thin wrapper rather than a second implementation: the decrypt, the
+    exchange, and the needs_reconnect bookkeeping happen in exactly one place,
+    and the calendar route gets the scopes it has to check before it can tell
+    a missing permission from a broken one.
+    """
+    return (await get_access_grant(user_id)).token
 
 
 async def _sync_classes(

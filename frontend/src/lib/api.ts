@@ -119,3 +119,19 @@ export const getClassroomCourses = () =>
 /** 409 is the reconnect signal, not a failure. See routers/classroom.py. */
 export const isReconnectError = (e: unknown) =>
   e instanceof ApiError && e.status === 409;
+
+// ---------------------------------------------------------------------------
+// Calendar — phase 07. Times only; see backend/app/routers/calendar.py.
+// ---------------------------------------------------------------------------
+
+export type BusyResponse = {
+  /**
+   * False when the Calendar scope was never granted — which is every account
+   * connected before phase 07 existed. Not an error: the planner simply
+   * treats every waking hour as free and the Week page says so once, quietly.
+   */
+  granted: boolean;
+  busy: { starts_at: string; ends_at: string }[];
+};
+
+export const getBusy = (days = 7) => api<BusyResponse>(`/calendar/busy?days=${days}`);

@@ -10,6 +10,7 @@ import {
   formatLate,
   isOverdue,
 } from "../lib/board";
+import { formatEstimate } from "../lib/schedule";
 import { toast, undoable } from "../lib/toast";
 import ChecklistEditor from "./ChecklistEditor";
 
@@ -112,6 +113,20 @@ export default function TaskCard({
               {cls.name}
             </span>
           ))}
+
+        {/*
+          Beside the due chip, because "due Thursday" and "takes two hours"
+          are one thought. Absent rather than guessed here: the class-median
+          fallback belongs to the planner, which shows its guesses in italics
+          on the Week tab — a made-up number sitting on a card in the same
+          type as a real one is exactly how an estimate stops meaning
+          anything.
+        */}
+        {task.estimate_minutes && (
+          <span className="muted" title="Your estimate">
+            {formatEstimate(task.estimate_minutes)}
+          </span>
+        )}
 
         {task.source === "classroom" && <span className="tag">Classroom</span>}
 

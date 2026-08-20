@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as db from "../lib/db";
-import type { Class, Task, TaskStatus } from "../lib/types";
+import type { Class, PlanBlock, Routine, Task, TaskStatus } from "../lib/types";
 
 function message(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) return String(e.message);
@@ -18,8 +18,24 @@ function message(e: unknown): string {
 export function useData(userId: string) {
   const [classes, setClasses] = useState<Class[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Where the plan is read from — this morning's midnight, fixed for the life
+   * of the session.
+   *
+   * Fixed rather than recomputed, because it is a query bound: a value that
+   * drifted forward on every render would make each refresh fetch a slightly
+   * different set of blocks, and a block would vanish from the grid mid-week
+   * the moment the clock crossed it.
+   */
+  const planFrom = useMemo(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -28,15 +44,26 @@ export function useData(userId: string) {
       // just aged out. Doing it the other way round shows a card for one
       // render and then vanishes it.
       await db.archiveCompleted();
-      const [c, t] = await Promise.all([db.listClasses(true), db.listTasks()]);
+      // Four small queries in parallel. Routines are a handful of rows and
+      // plan blocks are bounded by the horizon, so they join the one shared
+      // load rather than becoming a second cache that can go stale on its own
+      // — refresh() stays the only invalidation in the app.
+      const [c, t, r, p] = await Promise.all([
+        db.listClasses(true),
+        db.listTasks(),
+        db.listRoutines(),
+        db.listPlanBlocks(planFrom),
+      ]);
       setClasses(c);
       setTasks(t);
+      setRoutines(r);
+      setPlanBlocks(p);
     } catch (e) {
       setError(message(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [planFrom]);
 
   /**
    * Drag a card to another column.
@@ -79,6 +106,9 @@ export function useData(userId: string) {
   return {
     classes,
     tasks,
+    routines,
+    planBlocks,
+    planFrom,
     loading,
     error,
     refresh,
@@ -86,6 +116,8 @@ export function useData(userId: string) {
     setError,
     setClasses,
     setTasks,
+    setRoutines,
+    setPlanBlocks,
     userId,
   };
 }

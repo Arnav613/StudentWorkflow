@@ -3,6 +3,7 @@ import type { Session } from "@supabase/supabase-js";
 import { useData } from "../hooks/useData";
 import ClassesPage from "./Classes";
 import TodoPage from "./Todo";
+import WeekPage from "./Week";
 import ClassDetail from "./ClassDetail";
 import AccountMenu from "../components/AccountMenu";
 import Logo from "../components/Logo";
@@ -39,6 +40,7 @@ type BackendState =
 export type View =
   | { kind: "classes" }
   | { kind: "todo" }
+  | { kind: "week" }
   | { kind: "class"; id: string; tab: ClassTab };
 
 export type ClassTab = "tasks" | "notes" | "docs";
@@ -48,12 +50,14 @@ const CLASS_TABS: ClassTab[] = ["tasks", "notes", "docs"];
 function viewToHash(v: View): string {
   if (v.kind === "classes") return "#/classes";
   if (v.kind === "todo") return "#/todo";
+  if (v.kind === "week") return "#/week";
   return `#/class/${v.id}/${v.tab}`;
 }
 
 function hashToView(hash: string): View {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "todo") return { kind: "todo" };
+  if (parts[0] === "week") return { kind: "week" };
   if (parts[0] === "class" && parts[1]) {
     const tab = CLASS_TABS.includes(parts[2] as ClassTab)
       ? (parts[2] as ClassTab)
@@ -110,6 +114,12 @@ export default function Board({
 
   const tab = view.kind === "class" ? "classes" : view.kind;
 
+  const TOP_TAB_TITLE: Record<"classes" | "todo" | "week", string> = {
+    classes: "Classes",
+    todo: "To do",
+    week: "Week",
+  };
+
   const TAB_LABEL: Record<ClassTab, string> = {
     tasks: "Tasks",
     notes: "Notes",
@@ -118,7 +128,7 @@ export default function Board({
   useTitle(
     view.kind === "class"
       ? [openClass?.name, view.tab === "tasks" ? null : TAB_LABEL[view.tab]]
-      : [view.kind === "todo" ? "To do" : "Classes"],
+      : [TOP_TAB_TITLE[view.kind]],
   );
 
   return (
@@ -153,6 +163,14 @@ export default function Board({
             >
               To do
             </button>
+            {/* Third and last. "What am I taking", "what is due", "when will I
+                do it" — three questions, in the order a term asks them. */}
+            <button
+              className={`tab${tab === "week" ? " current" : ""}`}
+              onClick={() => go({ kind: "week" })}
+            >
+              Week
+            </button>
           </nav>
 
           <span className="spacer" />
@@ -172,7 +190,7 @@ export default function Board({
       )}
 
       {store.loading ? (
-        view.kind === "todo" ? (
+        view.kind === "todo" || view.kind === "week" ? (
           <BoardSkeleton />
         ) : (
           <ClassGridSkeleton />
@@ -184,6 +202,8 @@ export default function Board({
         </div>
       ) : view.kind === "todo" ? (
         <TodoPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
+      ) : view.kind === "week" ? (
+        <WeekPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
       ) : view.kind === "class" && openClass ? (
         <ClassDetail
           cls={openClass}

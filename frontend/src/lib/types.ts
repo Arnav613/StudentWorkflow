@@ -27,6 +27,12 @@ export type Task = {
   position: number;
   completed_at: string | null;
   archived_at: string | null;
+  /**
+   * How long this takes, in minutes. Null is *unestimated* and never zero —
+   * see migration 0005. The planner guesses a class median for a null and
+   * says so in italics; a zero would occupy no time and then eat an evening.
+   */
+  estimate_minutes: number | null;
   google_coursework_id: string | null;
   google_course_id: string | null;
   status_overridden: boolean;
@@ -105,6 +111,51 @@ export type ClassLink = {
   title: string;
   url: string;
   position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * Something that occupies time every week but is not work: gym, laundry, a
+ * standing rehearsal.
+ *
+ * Not a task, deliberately. Routines never reach the board, never complete
+ * and never archive — they exist so the planner knows which hours are already
+ * gone. See migration 0005 for why that is a separate table rather than a
+ * recurring task.
+ *
+ * `weekday` null means daily; 0–6 is Sunday–Saturday, matching `Date#getDay`.
+ * `time_of_day` is local wall-clock "HH:MM:SS", not an instant: 7am is 7am
+ * wherever you are.
+ */
+export type Routine = {
+  id: string;
+  user_id: string;
+  title: string;
+  weekday: number | null;
+  time_of_day: string;
+  duration_minutes: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * One hour of the week, spoken for. Exactly one of `task_id` and `routine_id`
+ * is set.
+ *
+ * `locked` means a person put this block here. Regeneration rewrites unlocked
+ * blocks and plans around locked ones, which is the whole reason a manual
+ * edit is not simply overwritten by the next press of the button.
+ */
+export type PlanBlock = {
+  id: string;
+  user_id: string;
+  task_id: string | null;
+  routine_id: string | null;
+  starts_at: string;
+  ends_at: string;
+  locked: boolean;
   created_at: string;
   updated_at: string;
 };
