@@ -39,8 +39,8 @@ export default function ClassroomPanel({
 
   const connected = status?.connected ?? false;
   const needsReconnect = status?.needs_reconnect ?? false;
-  // A live grant issued before the app asked for Calendar. Everything works;
-  // the week planner just cannot see which hours are already taken.
+  // A live grant issued before the app asked for Calendar, announcements,
+  // materials or Drive. Everything works; some of it works with less.
   const needsScopes = status?.needs_scopes ?? false;
 
   // Connected and working: nothing. The exception is a failure, which is
@@ -78,18 +78,23 @@ export default function ClassroomPanel({
             </>
           ) : (
             <>
-              <strong>One more permission.</strong>{" "}
+              <strong>A few more permissions.</strong>{" "}
               <span className="muted">
-                The week planner can work around your lectures and meetings if
-                it may read your calendar — times only, never what the events
-                are. Reconnect to include it. Nothing else changes, and
-                declining it costs you nothing but that.
+                Asked for together, once, because Google issues a permission
+                only at the moment you approve it — four prompts across four
+                months would be four interruptions. The calendar, so the week
+                planner can work around your lectures. Announcements and class
+                materials, so a deadline a professor moved in a post reaches
+                you, and so attached documents land in Docs on their own. And
+                Drive, so those documents can be summarised. Every one is
+                read-only, each can be unticked on the Google screen, and
+                declining any of them costs you that feature and nothing else.
               </span>
             </>
           )}
           <div className="row">
             <button onClick={connect} disabled={Boolean(busy)}>
-              {needsReconnect ? "Reconnect" : "Allow calendar"}
+              {needsReconnect ? "Reconnect" : "Review permissions"}
             </button>
           </div>
         </div>

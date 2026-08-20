@@ -25,9 +25,14 @@ def client_config(settings: Settings = Depends(get_settings)) -> dict:
     `classroom_enabled` is the switch that reveals the Connect Classroom
     button. It lives on the server so turning it off during a Google outage
     is an env var on Render, not a frontend redeploy.
+
+    `ai_enabled` is the same idea for phase 09, and it reports readiness
+    rather than the flag: a deployment with the switch on and no Gemini key
+    would otherwise show a Summarise button that can only ever 503.
     """
     return {
         "classroom_enabled": settings.classroom_enabled,
+        "ai_enabled": settings.ai_ready,
         "allowed_email_domain": settings.allowed_email_domain,
     }
 

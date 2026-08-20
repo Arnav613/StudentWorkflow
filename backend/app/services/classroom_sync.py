@@ -12,12 +12,12 @@ calls exactly this function, with no second implementation to keep in step.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.core import supabase as db
 from app.core.config import get_settings
 from app.core.crypto import TokenCryptoError, decrypt
-from app.services import google
+from app.services import ai, google
 
 # Kept in step with CLASS_COLORS in frontend/src/lib/types.ts. A colour picked
 # from the course id rather than a counter, so re-running import on a fresh
@@ -38,6 +38,10 @@ class SyncReport:
     tasks_auto_reopened: int = 0
     courses_skipped_dismissed: int = 0
     courses_skipped_term: int = 0
+    # Phase 09. Links are written outright; proposals only ever wait to be read.
+    links_created: int = 0
+    announcements_read: int = 0
+    proposals_created: int = 0
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -244,6 +248,7 @@ async def _sync_coursework(
     user_id: str,
     token: str,
     mapping: dict[str, dict],
+    harvest: dict[str, list[dict]],
     report: SyncReport,
 ) -> None:
     # Archived rows are included on purpose: a task finished and archived
@@ -271,6 +276,12 @@ async def _sync_coursework(
             # One inaccessible course must not sink the whole sync.
             report.warnings.append(f"{klass['name']}: {exc}")
             continue
+
+        # Kept for phase 09's attachment ingest, which runs after this pass.
+        # These posts carry a `materials[]` array as well as a due date, and
+        # re-listing them later would be a second identical request to Google
+        # for something already in hand.
+        harvest[course_id] = coursework
 
         for cw in coursework:
             due = google.due_at(cw)
@@ -350,13 +361,246 @@ async def _sync_coursework(
                 pass
 
 
+# ---------------------------------------------------------------------------
+# Phase 09 — attachments, which are facts, and deadlines, which are guesses
+# ---------------------------------------------------------------------------
+
+# How far back a first sync is willing to send prose to a model.
+#
+# `announcements_seen` guarantees an announcement is read once ever, but the
+# first run on a course three months into term would otherwise read the whole
+# term in one go — dozens of calls, to find deadlines that have already passed.
+# Older announcements are marked seen without being read, because a deadline
+# from six weeks ago is not work, it is history.
+AI_HORIZON_DAYS = 14
+
+
+async def _ingest_attachments(
+    user_id: str,
+    class_id: str,
+    posts: list[dict],
+    existing: dict[str, dict],
+    next_position: int,
+    report: SyncReport,
+) -> int:
+    """Drive files and links from Classroom posts, written straight to Docs.
+
+    The one place in this app where something arrives from Google and is *not*
+    proposed for approval. Nothing inferred it: `materials[]` is a structured
+    array Classroom maintains, and a link is a fact. Putting a fact in a review
+    queue would train the habit of pressing Accept without reading, which is
+    precisely what would make the deadline queue next door worthless.
+
+    Deduped on the id Google gave it, so the hourly cron sees the same syllabus
+    forever and writes it once. Nothing here ever updates a row it did not
+    create: a title the user renamed on their own Docs tab stays renamed.
+
+    Returns the next free position, so a course's posts append in order rather
+    than all claiming the same slot.
+    """
+    for post in posts:
+        for att in google.attachments_of(post):
+            if att.key in existing:
+                continue
+            try:
+                rows = await db.insert(
+                    "class_links",
+                    {
+                        "user_id": user_id,
+                        "class_id": class_id,
+                        "title": att.title[:200],
+                        "url": att.url[:2000],
+                        "position": next_position,
+                        "google_material_id": att.key,
+                        "google_drive_id": att.drive_id,
+                    },
+                )
+            except db.DuplicateKey:
+                # A concurrent sync got there first. Theirs is identical.
+                existing[att.key] = {}
+                continue
+            existing[att.key] = rows[0] if rows else {}
+            next_position += 1
+            report.links_created += 1
+    return next_position
+
+
+async def _read_announcements(
+    user_id: str,
+    course_id: str,
+    klass: dict,
+    posts: list[dict],
+    report: SyncReport,
+) -> None:
+    """The prose, read once ever, for a deadline it might be hiding.
+
+    This is the only place in `sync_user` a model is involved, and what it can
+    do is bounded to one thing: write a row in `proposals`. It cannot create a
+    task, move a due date or touch anything already on the board. One
+    hallucinated deadline that wrote itself onto a Tuesday would end trust in
+    every other date the app shows, and there are several hundred of those.
+
+    An announcement is marked seen whether or not it produced anything, and
+    that is the whole cost control: "no deadline here" is a permanent answer.
+    A failed call is deliberately *not* marked, so the next hourly pass retries
+    it for free rather than losing it.
+    """
+    rows = await db.select("announcements_seen", user_id=db.eq(user_id))
+    seen = {r["announcement_id"] for r in rows}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=AI_HORIZON_DAYS)
+
+    for post in posts:
+        ann_id = post.get("id")
+        if not ann_id or ann_id in seen:
+            continue
+
+        text = (post.get("text") or "").strip()
+        posted = google.posted_at(post)
+
+        # Marked seen without being read: too old to matter, or nothing to
+        # read. Both are permanent facts about this announcement.
+        if not text or posted is None or posted < cutoff:
+            await _mark_seen(user_id, course_id, ann_id)
+            continue
+
+        try:
+            found = await ai.propose_deadline(
+                course_name=klass["name"],
+                posted_on=posted.date(),
+                text=text,
+            )
+        except ai.AiUnavailable:
+            # The flag went off mid-run. Not this announcement's problem, and
+            # not something to record as read.
+            return
+        except ai.AiError as exc:
+            # One announcement's failure, counted and dropped. The sync's job
+            # is deadlines from coursework; this is the part that can be
+            # missing without the run being wrong.
+            report.warnings.append(f"{klass['name']} announcement: {exc}")
+            continue
+
+        report.announcements_read += 1
+
+        if found is not None:
+            try:
+                await db.insert(
+                    "proposals",
+                    {
+                        "user_id": user_id,
+                        "class_id": klass["id"],
+                        "kind": "deadline",
+                        "source_kind": "announcement",
+                        "source_id": ann_id,
+                        "payload": {
+                            "title": found.title,
+                            "due_date": found.due_at,
+                            "excerpt": found.excerpt,
+                            # Kept so the queue can offer "open the original"
+                            # — a proposal you cannot check at the source is
+                            # one you can only take on faith.
+                            "announcement_url": post.get("alternateLink"),
+                            "class_name": klass["name"],
+                        },
+                    },
+                )
+                report.proposals_created += 1
+            except db.DuplicateKey:
+                # Already asked, and answered — including answered "no". A
+                # rejected proposal is kept precisely so this insert fails.
+                pass
+
+        await _mark_seen(user_id, course_id, ann_id)
+
+
+async def _mark_seen(user_id: str, course_id: str, announcement_id: str) -> None:
+    try:
+        await db.insert(
+            "announcements_seen",
+            {
+                "user_id": user_id,
+                "google_course_id": course_id,
+                "announcement_id": announcement_id,
+            },
+        )
+    except db.DuplicateKey:
+        pass
+
+
+async def _sync_extras(
+    user_id: str,
+    grant: google.AccessToken,
+    mapping: dict[str, dict],
+    harvest: dict[str, list[dict]],
+    report: SyncReport,
+) -> None:
+    """Materials and announcements, for every course, after coursework.
+
+    Deliberately last. Coursework is what the app exists for, and a Drive
+    outage or a rate-limited model must never be the reason a due date failed
+    to arrive — by the time this runs, every deadline Classroom stated
+    outright is already on the board.
+
+    Each permission is checked separately and skipped quietly when absent.
+    Everyone connected before phase 09 is in exactly that position: their
+    grant predates these scopes, the reconnect banner is asking them about it,
+    and until they answer, the rest of the sync must work exactly as before.
+    """
+    materials_ok = google.MATERIALS_SCOPE in grant.scopes
+    announcements_ok = google.ANNOUNCEMENTS_SCOPE in grant.scopes
+    ai_ok = announcements_ok and ai.enabled()
+
+    for course_id, klass in mapping.items():
+        links = await db.select(
+            "class_links", user_id=db.eq(user_id), class_id=db.eq(klass["id"])
+        )
+        existing = {l["google_material_id"]: l for l in links if l.get("google_material_id")}
+        position = max((l.get("position") or 0) for l in links) + 1 if links else 0
+
+        # Attachments on coursework need no new permission at all — the pass
+        # above already read those posts, and `harvest` is that read, not a
+        # second one. So the syllabus a professor stapled to an assignment
+        # reaches the Docs tab even for a grant that predates phase 09.
+        position = await _ingest_attachments(
+            user_id, klass["id"], harvest.get(course_id, []), existing, position, report
+        )
+
+        if materials_ok:
+            try:
+                posts = await google.list_coursework_materials(grant.token, course_id)
+            except google.ClassroomError as exc:
+                report.warnings.append(f"{klass['name']} materials: {exc}")
+            else:
+                position = await _ingest_attachments(
+                    user_id, klass["id"], posts, existing, position, report
+                )
+
+        if not announcements_ok:
+            continue
+
+        try:
+            posts = await google.list_announcements(grant.token, course_id)
+        except google.ClassroomError as exc:
+            report.warnings.append(f"{klass['name']} announcements: {exc}")
+            continue
+
+        position = await _ingest_attachments(
+            user_id, klass["id"], posts, existing, position, report
+        )
+
+        if ai_ok:
+            await _read_announcements(user_id, course_id, klass, posts, report)
+
+
 async def sync_user(user_id: str) -> SyncReport:
     """One full pass. Phase 04's cron calls this and nothing else."""
     report = SyncReport()
     started = _iso(datetime.now(timezone.utc))
 
     try:
-        token = await get_access_token(user_id)
+        grant = await get_access_grant(user_id)
+        token = grant.token
         courses = await google.list_courses(token)
         report.courses_seen = len(courses)
 
@@ -365,7 +609,9 @@ async def sync_user(user_id: str) -> SyncReport:
         terms = get_settings().term_filters
 
         mapping = await _sync_classes(user_id, courses, dismissed, terms, report)
-        await _sync_coursework(user_id, token, mapping, report)
+        harvest: dict[str, list[dict]] = {}
+        await _sync_coursework(user_id, token, mapping, harvest, report)
+        await _sync_extras(user_id, grant, mapping, harvest, report)
     except Exception as exc:
         await _record(user_id, started, report, error=str(exc))
         raise

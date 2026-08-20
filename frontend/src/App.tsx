@@ -10,7 +10,7 @@ import Toaster from "./components/Toaster";
 type BackendState =
   | { kind: "idle" }
   | { kind: "checking" }
-  | { kind: "ok"; email: string; classroomEnabled: boolean }
+  | { kind: "ok"; email: string; classroomEnabled: boolean; aiEnabled: boolean }
   | { kind: "error"; message: string };
 
 export default function App() {
@@ -53,6 +53,7 @@ export default function App() {
           kind: "ok",
           email: me.email,
           classroomEnabled: config.classroom_enabled,
+          aiEnabled: config.ai_enabled,
         }),
       )
       .catch((e: unknown) =>

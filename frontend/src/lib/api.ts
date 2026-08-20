@@ -45,6 +45,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export type ClientConfig = {
   classroom_enabled: boolean;
+  /**
+   * A key *and* the switch, decided on the server. False hides every AI
+   * control rather than showing one that can only 503 — the same rule the
+   * Connect Classroom button has followed since phase 02.
+   */
+  ai_enabled: boolean;
   allowed_email_domain: string;
 };
 
@@ -151,3 +157,25 @@ export type CalendarResponse = {
 
 export const getCalendar = (days = 7) =>
   api<CalendarResponse>(`/calendar/events?days=${days}`);
+
+// ---------------------------------------------------------------------------
+// AI — phase 09. One route; the other model call runs inside sync, unwatched.
+// ---------------------------------------------------------------------------
+
+export type LinkSummary = {
+  /** Set when there is a summary. Exactly one of these two is non-null. */
+  summary: string | null;
+  /**
+   * Why there is not one, in a sentence meant to be shown as it is: a PDF, a
+   * plain link, or a permission not granted. None of those is an error, and
+   * rendering them in red would say the app is broken when it is not.
+   */
+  reason: string | null;
+  generated_at: string | null;
+};
+
+export const summariseLink = (link_id: string) =>
+  api<LinkSummary>("/ai/summarise-link", {
+    method: "POST",
+    body: JSON.stringify({ link_id }),
+  });

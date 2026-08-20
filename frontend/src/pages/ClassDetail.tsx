@@ -28,6 +28,7 @@ export default function ClassDetail({
   store,
   onTab,
   onBack,
+  aiEnabled,
   notes: NotesPanel,
 }: {
   cls: Class;
@@ -35,6 +36,12 @@ export default function ClassDetail({
   store: DataStore;
   onTab: (t: ClassTab) => void;
   onBack: () => void;
+  /**
+   * Whether the deployment has a model at all. Passed down rather than
+   * fetched here: /config is already read once at startup, and a second read
+   * would be a second answer that could disagree with the first.
+   */
+  aiEnabled: boolean;
   notes: ComponentType<{ store: DataStore; classId?: string }>;
 }) {
   // A store view scoped to this class. The board component is unchanged and
@@ -124,7 +131,9 @@ export default function ClassDetail({
         </Suspense>
       )}
 
-      {tab === "docs" && <DocsPanel classId={cls.id} userId={store.userId} />}
+      {tab === "docs" && (
+        <DocsPanel classId={cls.id} userId={store.userId} aiEnabled={aiEnabled} />
+      )}
     </div>
   );
 }

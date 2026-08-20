@@ -1,6 +1,7 @@
 import type { DataStore } from "../hooks/useData";
 import TaskForm from "../components/TaskForm";
 import TaskBoard from "../components/TaskBoard";
+import ProposalsPanel from "../components/ProposalsPanel";
 
 /**
  * To do: everything, from every class, on one board.
@@ -28,6 +29,11 @@ export default function TodoPage({
             : "Nothing outstanding. Add something below."}
         </p>
       </div>
+
+      {/* Above the form, and above the board. A deadline a professor moved is
+          the most urgent thing on this page on the rare day it exists, and it
+          renders nothing at all on every other day. */}
+      <ProposalsPanel store={store} />
 
       <TaskForm store={store} />
       <TaskBoard store={store} onOpenClass={onOpenClass} />

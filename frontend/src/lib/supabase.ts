@@ -67,6 +67,20 @@ export const CLASSROOM_SCOPES = [
   "https://www.googleapis.com/auth/classroom.courses.readonly",
   "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
   "https://www.googleapis.com/auth/calendar.readonly",
+  // Phase 09, all three at once. A refresh token carries only the scopes it
+  // was issued with, so every permission added here costs an already-connected
+  // user one trip through the Google screen — and asking four times across
+  // four phases is four chances to say no to an app that has stopped
+  // explaining itself. announcements is the prose a moved deadline hides in;
+  // courseworkmaterials is the posts that carry a syllabus but no due date;
+  // drive.readonly is what lets a document be summarised at all.
+  //
+  // None of them is in REQUIRED_SCOPE_GROUPS. Untick any one on the Google
+  // screen and Classroom still syncs — you lose that feature and are told so,
+  // which is the only honest way to ask for a permission nobody needs.
+  "https://www.googleapis.com/auth/classroom.announcements.readonly",
+  "https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly",
+  "https://www.googleapis.com/auth/drive.readonly",
 ].join(" ");
 
 /** Set before the redirect, read after it. See lib/classroomHandoff.ts. */

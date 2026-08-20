@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     classroom_term_filter: str = ""
 
 
+    # --- AI -----------------------------------------------------------------
+    # Off by default, and reported to the browser through /config beside
+    # classroom_enabled, so a deployment without a key hides the AI buttons
+    # rather than showing ones that 500. A key present but the flag off means
+    # off: the switch is the switch.
+    ai_enabled: bool = False
+    gemini_api_key: str = ""
+
+    # Gemini's cheapest current model. Named here rather than in services/ai.py
+    # so swapping it during a rate-limit afternoon is an env var on Render.
+    gemini_model: str = "gemini-2.0-flash"
+
     # --- Cron ---------------------------------------------------------------
     # Shared secret for POST /classroom/cron/sync. The hourly GitHub Action is
     # the only caller and has no user session to present, so this is the whole
@@ -66,6 +78,11 @@ class Settings(BaseSettings):
     # outright rather than leaving it open — a cron endpoint that authenticates
     # against an unset secret is an unauthenticated cron endpoint.
     cron_secret: str = ""
+
+    @property
+    def ai_ready(self) -> bool:
+        """The flag *and* a key. Either alone is a promise the app cannot keep."""
+        return self.ai_enabled and bool(self.gemini_api_key)
 
     @property
     def term_filters(self) -> list[str]:

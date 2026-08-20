@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as db from "../lib/db";
 import type { ClassLink } from "../lib/types";
 import { toast, undoable } from "../lib/toast";
+import { summariseLink } from "../lib/api";
 
 function message(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) return String(e.message);
@@ -33,15 +34,49 @@ function hostOf(url: string): string {
 export default function DocsPanel({
   classId,
   userId,
+  aiEnabled,
 }: {
   classId: string;
   userId: string;
+  aiEnabled: boolean;
 }) {
   const [links, setLinks] = useState<ClassLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState("");
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
+
+  /**
+   * Summarising, per row.
+   *
+   * `reasons` holds the answers that are not summaries — a PDF, a plain link,
+   * a permission not granted. They are kept in memory and not in the database
+   * because none of them is a fact about the document: grant the permission,
+   * or wait for phase 10 to read PDFs, and the same row answers differently.
+   */
+  const [summarising, setSummarising] = useState<string | null>(null);
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+
+  async function summarise(link: ClassLink) {
+    setSummarising(link.id);
+    setReasons((r) => ({ ...r, [link.id]: "" }));
+    try {
+      const out = await summariseLink(link.id);
+      if (out.summary) {
+        setLinks((prev) =>
+          db.withSummary(prev, link.id, out.summary as string, out.generated_at),
+        );
+      } else if (out.reason) {
+        // Not a toast and not red. "Can’t read this file type" is an answer,
+        // and the row it belongs to is the place to say it.
+        setReasons((r) => ({ ...r, [link.id]: out.reason as string }));
+      }
+    } catch (e) {
+      toast(message(e), "error");
+    } finally {
+      setSummarising(null);
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -226,7 +261,21 @@ export default function DocsPanel({
                   // told which dashboard sent the click.
                   rel="noreferrer"
                 >
-                  <span className="doc-title">{l.title || hostOf(l.url)}</span>
+                  <span className="doc-title">
+                    {l.title || hostOf(l.url)}
+                    {/* Where this row came from. A link a professor attached
+                        and a link you pasted sit in one list on purpose — a
+                        syllabus is a syllabus — but which is which is worth
+                        knowing before you rename one. */}
+                    {l.google_material_id && (
+                      <span
+                        className="tag"
+                        title="Attached to a Classroom post"
+                      >
+                        Classroom
+                      </span>
+                    )}
+                  </span>
                   {/* The host is shown under a name the user chose, as the
                       honest version of where the click goes. When there is no
                       name the host is already the title, and printing it
@@ -263,6 +312,36 @@ export default function DocsPanel({
                     ×
                   </button>
                 </span>
+
+                {/* Offered only where it can work: a Drive file this app was
+                    told about by Classroom. A pasted link is never fetched —
+                    that was phase 06's rule and it still holds — and a
+                    deployment without a model shows no button rather than one
+                    that fails. */}
+                {aiEnabled && l.google_drive_id && !l.summary && (
+                  <button
+                    className="link doc-summarise"
+                    onClick={() => void summarise(l)}
+                    disabled={summarising === l.id}
+                  >
+                    {summarising === l.id ? "Reading…" : "Summarise"}
+                  </button>
+                )}
+
+                {l.summary && (
+                  <p className="doc-summary small muted">
+                    {l.summary}
+                    {/* Said out loud on every summary, every time. This is the
+                        one thing on the Docs tab a machine wrote, and a
+                        paragraph that does not say so reads as the document
+                        itself. */}
+                    <span className="doc-summary-mark"> · AI summary</span>
+                  </p>
+                )}
+
+                {reasons[l.id] && (
+                  <p className="doc-summary small muted">{reasons[l.id]}</p>
+                )}
               </li>
             ))}
           </ul>

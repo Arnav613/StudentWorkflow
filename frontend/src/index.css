@@ -2833,3 +2833,99 @@ button.link.danger:hover:not(:disabled) {
     }
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Phase 09 — a summary under a document, and a queue above the board
+   --------------------------------------------------------------------------- */
+
+/* The row is `flex-wrap: wrap`, so a full basis is what puts these on their
+   own line under the link rather than squeezing them in beside the buttons. */
+.doc-summarise,
+.doc-summary {
+  flex-basis: 100%;
+  margin: 0.15rem 0 0;
+}
+
+.doc-summarise {
+  text-align: left;
+  align-self: flex-start;
+}
+
+.doc-summary {
+  padding-left: 2.6rem; /* Aligned under the title, past grip and icon. */
+  line-height: 1.45;
+}
+
+/* Quiet, and always present. A machine wrote the paragraph above it and a
+   summary that does not say so reads as the document's own words. */
+.doc-summary-mark {
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+/* The badge sits inline with the title. Deliberately not a flex row: the
+   title above already truncates with an ellipsis, and flex would take that
+   away from a long syllabus name to gain nothing. */
+.doc-title .tag {
+  margin-left: 0.45rem;
+}
+
+/* --- The review queue ---------------------------------------------------- */
+
+/* Set apart from the board below it without being an alarm. This is news, not
+   a failure: a dashed edge and the accent tint say "unfinished business",
+   which is exactly what an unanswered proposal is. */
+.proposals {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+
+.proposals h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.proposal-list > li {
+  align-items: flex-start;
+  gap: 0.9rem;
+  padding: 0.7rem 0.5rem;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.proposal-list > li:first-child {
+  border-top: none;
+}
+
+.proposal-title {
+  margin: 0;
+}
+
+/* The professor's own sentence. Indented and ruled in the class colour, so it
+   reads as a quotation from somewhere else — which is the whole point of
+   showing it. */
+.proposal-excerpt {
+  margin: 0.3rem 0 0;
+  padding: 0.15rem 0 0.15rem 0.7rem;
+  border-left: 2px solid color-mix(in srgb, var(--c, var(--accent)) 55%, transparent);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.proposal-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: none;
+  margin-left: auto;
+}
+
+.stack-tight {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}

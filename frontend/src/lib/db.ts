@@ -18,7 +18,9 @@ import type {
   Class,
   ChecklistItem,
   ClassLink,
+  DeadlinePayload,
   HealthTask,
+  Proposal,
   PlanBlock,
   Routine,
   RoutineOverride,
@@ -428,6 +430,102 @@ export function normaliseUrl(raw: string): string {
   const trimmed = raw.trim();
   if (!/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return `https://${trimmed}`;
   return /^https?:/i.test(trimmed) ? trimmed : `https://${trimmed.replace(/^[^:]+:\/*/, "")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Proposals — phase 09. See migration 0010.
+// ---------------------------------------------------------------------------
+
+/**
+ * The review queue: what a model has suggested and nobody has answered yet.
+ *
+ * Almost always empty, which is why this is a panel and not a tab. It is
+ * fetched on its own rather than joining `useData`'s shared load — the queue
+ * is a small, rare list with its own lifecycle, and putting it in the
+ * five-query load would make every board refresh pay for a table that is
+ * usually zero rows.
+ */
+export async function listPendingProposals(): Promise<Proposal[]> {
+  return unwrap(
+    await supabase
+      .from("proposals")
+      .select("*")
+      .eq("status", "pending")
+      .order("created_at", { ascending: false }),
+  );
+}
+
+/**
+ * Yes: turn a proposal into a real task.
+ *
+ * Through `db.createTask`, the same function the New task form uses, and
+ * deliberately not through a path of its own. The moment this row becomes a
+ * task it stops being model output and becomes the user's — `source` is left
+ * to its default of 'manual', because a person typed nothing here but a
+ * person did decide it, and 'classroom' would hand Classroom's sync the right
+ * to overwrite a title and date Classroom has never heard of.
+ *
+ * Midnight, like every hand-made whole-day deadline: due by the end of that
+ * day. An announcement almost never states a time, and inventing 5pm would be
+ * the model's guess wearing a person's approval.
+ */
+export async function acceptProposal(
+  p: Proposal,
+  payload: DeadlinePayload,
+  userId: string,
+): Promise<Task> {
+  const task = await createTask({
+    user_id: userId,
+    title: payload.title,
+    class_id: p.class_id,
+    due_at: new Date(`${payload.due_date}T00:00`).toISOString(),
+  });
+
+  // After the insert, never before. A decided proposal whose task failed to
+  // write is a deadline that has silently vanished — the worst outcome this
+  // feature has — while a task whose proposal is still pending is one stale
+  // card in a queue, fixed by pressing the same button again.
+  await decide(p.id, "accepted");
+  return task;
+}
+
+/**
+ * No, and remember it.
+ *
+ * The row is kept rather than deleted, and that is the whole mechanism: the
+ * unique index on (user_id, source_kind, source_id, kind) means the next sync
+ * that re-reads this announcement cannot insert a second proposal for it. A
+ * delete would make "no" a thing the app asks you again every hour.
+ */
+export async function rejectProposal(id: string): Promise<void> {
+  await decide(id, "rejected");
+}
+
+async function decide(id: string, status: "accepted" | "rejected"): Promise<void> {
+  const { error } = await supabase
+    .from("proposals")
+    .update({ status, decided_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+/**
+ * A summary, written back into the row the backend already cached it in.
+ *
+ * The route persists it server-side; this exists so the open Docs tab shows
+ * the text without a refetch. Nothing here calls a model.
+ */
+export function withSummary(
+  links: ClassLink[],
+  id: string,
+  summary: string,
+  generatedAt: string | null,
+): ClassLink[] {
+  return links.map((l) =>
+    l.id === id
+      ? { ...l, summary, summary_generated_at: generatedAt ?? l.summary_generated_at }
+      : l,
+  );
 }
 
 // ---------------------------------------------------------------------------

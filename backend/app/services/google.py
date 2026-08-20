@@ -29,6 +29,35 @@ SUBMISSIONS_SCOPE = (
 
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 
+# --- Phase 09 -------------------------------------------------------------
+# Announcements are where a professor writes "the essay is now due Friday" —
+# prose Classroom has no structured field for, and the only place a moved
+# deadline ever appears.
+ANNOUNCEMENTS_SCOPE = (
+    "https://www.googleapis.com/auth/classroom.announcements.readonly"
+)
+# Coursework *materials* are the posts that carry attachments but set no due
+# date: reading packs, slide decks, the syllabus. Separate from courseWork,
+# and therefore a separate permission.
+MATERIALS_SCOPE = (
+    "https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly"
+)
+# Reading the contents of a Drive attachment, for a summary and nothing else.
+#
+# The broadest thing this app ever asks for, and the one worth arguing about.
+# Google publishes no "files shared with me through Classroom" scope, so a
+# document a professor attached is reachable only through Drive. What keeps it
+# honest is on our side: `export_text` below takes a file id, and the only
+# file ids that exist in this codebase are ones Classroom handed us as
+# attachments. Nothing lists a Drive folder, searches Drive, or reads a file
+# the user did not already have pinned in Docs.
+#
+# Optional, like Calendar. Decline it and every link still arrives; only the
+# Summarise button goes quiet, and it says why.
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+
+DRIVE = "https://www.googleapis.com/drive/v3"
+
 # Each group is one permission we need, listed as the names Google might use
 # for it. A grant satisfies us when it covers every group.
 #
@@ -48,7 +77,16 @@ REQUIRED_SCOPE_GROUPS = (
 # instead of failing. What it does do is raise the reconnect prompt for a
 # grant that predates it — which is how a new permission reaches an existing
 # user without a button of its own. Phase 09's scopes join this tuple.
-OPTIONAL_SCOPE_GROUPS = ((CALENDAR_SCOPE,),)
+# Phase 09 adds three at once, which is the point of doing it in one phase: a
+# refresh token carries only the scopes it was issued with, so each new
+# permission costs an existing user one trip through the Google screen. Four
+# separate prompts across four phases would be four chances to say no.
+OPTIONAL_SCOPE_GROUPS = (
+    (CALENDAR_SCOPE,),
+    (ANNOUNCEMENTS_SCOPE,),
+    (MATERIALS_SCOPE,),
+    (DRIVE_SCOPE,),
+)
 
 
 def _missing(groups: tuple, scopes: tuple[str, ...]) -> list[tuple[str, ...]]:
@@ -224,6 +262,210 @@ def due_at(coursework: dict) -> datetime | None:
         t.get("minutes", 0),
         tzinfo=timezone.utc,
     )
+
+
+# ---------------------------------------------------------------------------
+# Announcements and materials — phase 09
+# ---------------------------------------------------------------------------
+
+
+async def list_announcements(token: str, course_id: str) -> list[dict]:
+    """Published announcements for one course, newest first.
+
+    Google returns them in reverse creation order already, which is the order
+    that matters: the caller stops paying attention to anything older than its
+    horizon, and the newest announcement is the one most likely to move a
+    deadline.
+    """
+    async with _api(token) as http:
+        return await _get_all(
+            http,
+            f"/courses/{course_id}/announcements",
+            "announcements",
+            announcementStates="PUBLISHED",
+        )
+
+
+async def list_coursework_materials(token: str, course_id: str) -> list[dict]:
+    """The posts that carry attachments and set no due date.
+
+    A syllabus, a reading pack, a slide deck. `courseWork` has these too, but
+    only alongside a deadline; this is where the rest of a course's documents
+    actually live.
+    """
+    async with _api(token) as http:
+        return await _get_all(
+            http,
+            f"/courses/{course_id}/courseWorkMaterials",
+            "courseWorkMaterial",
+            courseWorkMaterialStates="PUBLISHED",
+        )
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """One Drive file or link hanging off a Classroom post.
+
+    A fact, not a guess — which is why nothing about this dataclass touches a
+    model. Classroom hands over `materials[]` fully structured, and phase 09's
+    one exception to "every AI feature proposes, you approve" is exactly this:
+    a link needs no approving because nobody inferred it.
+
+    `key` is what dedupes it across an hourly sync forever. A Drive file has an
+    id; a bare link has only its URL, which is the closest thing to one it has.
+    """
+
+    key: str
+    title: str
+    url: str
+    drive_id: str | None
+
+
+def attachments_of(post: dict) -> list[Attachment]:
+    """The Drive files and links attached to an announcement or coursework.
+
+    Four shapes arrive in `materials[]` and three of them are documents.
+    YouTube videos are dropped: a lecture recording is not a course document,
+    and a Docs tab that fills up with them stops being a place to find the
+    syllabus.
+
+    A `form` is a Google Form — an attendance poll, a feedback survey — and it
+    *is* something a student has to open, so it stays, as a link.
+    """
+    out: list[Attachment] = []
+    for material in post.get("materials") or []:
+        if "driveFile" in material:
+            f = (material["driveFile"] or {}).get("driveFile") or {}
+            file_id = f.get("id")
+            if not file_id:
+                continue
+            out.append(
+                Attachment(
+                    key=file_id,
+                    title=f.get("title") or "Attachment",
+                    url=f.get("alternateLink")
+                    or f"https://drive.google.com/file/d/{file_id}",
+                    drive_id=file_id,
+                )
+            )
+        elif "link" in material:
+            link = material["link"] or {}
+            url = link.get("url")
+            if not url:
+                continue
+            out.append(
+                Attachment(
+                    key=url,
+                    title=link.get("title") or url,
+                    url=url,
+                    drive_id=None,
+                )
+            )
+        elif "form" in material:
+            form = material["form"] or {}
+            url = form.get("formUrl")
+            if not url:
+                continue
+            out.append(
+                Attachment(key=url, title=form.get("title") or "Form", url=url, drive_id=None)
+            )
+    return out
+
+
+def posted_at(post: dict) -> datetime | None:
+    """When an announcement went up, as an instant.
+
+    `updateTime` is deliberately not used. A professor fixing a typo would
+    otherwise make a term-old announcement look new, and the model would be
+    asked to resolve "next Friday" against the wrong week.
+    """
+    raw = post.get("creationTime")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Drive — one file's text, for one summary
+# ---------------------------------------------------------------------------
+
+# What can be turned into text, and what it exports as. Everything absent from
+# this table is honestly unreadable by this code path: a PDF, an image, a
+# scanned handout, a zip. Phase 10 is where a model reads a PDF natively; here
+# the answer is a plain sentence, not a guess about what the file might say.
+EXPORTABLE = {
+    "application/vnd.google-apps.document": "text/plain",
+    "application/vnd.google-apps.presentation": "text/plain",
+    "application/vnd.google-apps.spreadsheet": "text/csv",
+}
+
+# Plain-text files are not Google-native and are not exported — they are
+# downloaded as they are.
+PLAIN_TEXT = {"text/plain", "text/markdown", "text/csv"}
+
+
+class UnreadableFile(Exception):
+    """A real file, in a format this code cannot turn into text.
+
+    Not an error. The Docs tab says it cannot read this file type and moves
+    on, which is the whole handling — a PDF is not a failure of the app.
+    """
+
+
+async def export_text(token: str, file_id: str, limit: int) -> tuple[str, str]:
+    """A Drive file as (title, text), for summarising and nothing else.
+
+    Two requests: the metadata, to learn what kind of file this is and to
+    refuse politely if it is one we cannot read, and then the content. Asking
+    for the content first would mean downloading a 40MB PDF to discover it is
+    a PDF.
+
+    `limit` is passed in rather than assumed, so the bound on how much of a
+    document reaches a model lives with the model, in services/ai.py.
+    """
+    async with httpx.AsyncClient(
+        base_url=DRIVE,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=60.0,
+    ) as http:
+        meta = await http.get(f"/files/{file_id}", params={"fields": "name,mimeType"})
+        if meta.status_code == 401:
+            raise ReconnectRequired(meta.text)
+        if meta.status_code in (403, 404):
+            # Shared with the class but not with this student, or unshared
+            # since. Indistinguishable from here, and the same sentence covers
+            # both: we cannot open it.
+            raise UnreadableFile("That file is not readable with your Google account")
+        if meta.status_code >= 400:
+            raise ClassroomError(f"drive meta -> {meta.status_code}: {meta.text}")
+
+        info = meta.json()
+        title = info.get("name") or "Document"
+        mime = info.get("mimeType") or ""
+
+        if mime in EXPORTABLE:
+            res = await http.get(
+                f"/files/{file_id}/export", params={"mimeType": EXPORTABLE[mime]}
+            )
+        elif mime in PLAIN_TEXT:
+            res = await http.get(f"/files/{file_id}", params={"alt": "media"})
+        else:
+            raise UnreadableFile(mime)
+
+        if res.status_code == 401:
+            raise ReconnectRequired(res.text)
+        if res.status_code == 403:
+            raise UnreadableFile("Drive would not hand over that file")
+        if res.status_code >= 400:
+            raise ClassroomError(f"drive export -> {res.status_code}: {res.text}")
+
+        # Cut here as well as in services/ai.py. The point of this one is the
+        # memory of a free dyno, not the size of a bill: a 200-page export
+        # should never be held in full to have its first few pages read.
+        return title, res.text[:limit]
 
 
 # ---------------------------------------------------------------------------

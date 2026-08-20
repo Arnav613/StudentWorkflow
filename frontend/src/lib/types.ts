@@ -111,9 +111,79 @@ export type ClassLink = {
   title: string;
   url: string;
   position: number;
+  /**
+   * Null for a link a person pasted; set for one Classroom attached to a post.
+   * Imported rows are never renamed or reordered by a sync — this is only how
+   * the hourly job knows it has already written them.
+   */
+  google_material_id: string | null;
+  /** Set only for Drive files, and the only rows that can be summarised. */
+  google_drive_id: string | null;
+  summary: string | null;
+  summary_generated_at: string | null;
   created_at: string;
   updated_at: string;
 };
+
+/**
+ * Something a model thinks, waiting for a person to agree.
+ *
+ * The app's one rule about AI, as a type: nothing a model produced writes a
+ * due date, a grade or a task. It writes one of these, and a human turns it
+ * into a task or throws it away. One hallucinated deadline that put itself on
+ * a Tuesday would cost the credibility of every other date on the board.
+ *
+ * `payload` is deliberately loose. Each `kind` carries a different shape, and
+ * a kind this build does not recognise must be skipped rather than crash the
+ * queue — a newer backend can always be talking to an older tab.
+ */
+export type ProposalKind = "deadline";
+export type ProposalStatus = "pending" | "accepted" | "rejected";
+
+export type Proposal = {
+  id: string;
+  user_id: string;
+  class_id: string | null;
+  kind: ProposalKind;
+  source_kind: "announcement";
+  source_id: string;
+  payload: Record<string, unknown>;
+  status: ProposalStatus;
+  created_at: string;
+  decided_at: string | null;
+};
+
+/** A `kind: "deadline"` payload, once it has been checked rather than assumed. */
+export type DeadlinePayload = {
+  title: string;
+  due_date: string;
+  excerpt: string;
+  announcement_url: string | null;
+  class_name: string | null;
+};
+
+/**
+ * Read a payload, or decline to.
+ *
+ * Returns null for anything malformed instead of throwing. A proposal is the
+ * one row in this app written from model output, and the queue that renders
+ * it must be the one place that never assumes the shape it was promised.
+ */
+export function deadlinePayload(p: Proposal): DeadlinePayload | null {
+  if (p.kind !== "deadline") return null;
+  const raw = p.payload ?? {};
+  const title = typeof raw.title === "string" ? raw.title.trim() : "";
+  const due = typeof raw.due_date === "string" ? raw.due_date : "";
+  if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(due)) return null;
+  return {
+    title,
+    due_date: due,
+    excerpt: typeof raw.excerpt === "string" ? raw.excerpt : "",
+    announcement_url:
+      typeof raw.announcement_url === "string" ? raw.announcement_url : null,
+    class_name: typeof raw.class_name === "string" ? raw.class_name : null,
+  };
+}
 
 /**
  * Something that occupies time every week but is not work: gym, laundry, a

@@ -44,3 +44,14 @@ services:
       # sync entirely rather than leaving it open.
       - key: CRON_SECRET
         sync: false
+      # --- AI, phase 09 ---------------------------------------------------
+      # Off unless both of these are set. The frontend reads the pair through
+      # /config as one flag and hides every AI control when it is false, so a
+      # deployment with no key shows no button rather than one that 503s.
+      - key: AI_ENABLED
+        value: "true"
+      - key: GEMINI_API_KEY
+        sync: false
+      # Named here so a rate-limited afternoon is an env var, not a deploy.
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash

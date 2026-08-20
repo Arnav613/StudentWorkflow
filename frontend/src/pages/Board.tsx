@@ -26,7 +26,7 @@ const NotesPanel = lazy(() => import("../components/NotesPanel"));
 type BackendState =
   | { kind: "idle" }
   | { kind: "checking" }
-  | { kind: "ok"; email: string; classroomEnabled: boolean }
+  | { kind: "ok"; email: string; classroomEnabled: boolean; aiEnabled: boolean }
   | { kind: "error"; message: string };
 
 /**
@@ -223,6 +223,7 @@ export default function Board({
           store={store}
           onTab={(t) => go({ kind: "class", id: openClass.id, tab: t })}
           onBack={() => go({ kind: "classes" })}
+          aiEnabled={backend.kind === "ok" && backend.aiEnabled}
           notes={NotesPanel}
         />
       ) : (

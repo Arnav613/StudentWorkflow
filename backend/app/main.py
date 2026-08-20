@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
-from app.routers import calendar, classroom, meta
+from app.routers import ai, calendar, classroom, meta
 
 settings = get_settings()
 
@@ -25,3 +25,4 @@ app.add_middleware(
 app.include_router(meta.router, tags=["meta"])
 app.include_router(classroom.router, tags=["classroom"])
 app.include_router(calendar.router, tags=["calendar"])
+app.include_router(ai.router, tags=["ai"])
