@@ -69,7 +69,13 @@ class Settings(BaseSettings):
 
     # Gemini's cheapest current model. Named here rather than in services/ai.py
     # so swapping it during a rate-limit afternoon is an env var on Render.
-    gemini_model: str = "gemini-2.0-flash"
+    #
+    # It is also, as of August 2026, a value with a shelf life: 2.0-flash was
+    # retired mid-term and every call started coming back 404 with Google
+    # naming the successor in the error body. That is the failure to expect
+    # here — not a wrong key and not a broken prompt — so when the AI features
+    # go dark all at once, read the message before changing anything else.
+    gemini_model: str = "gemini-3.6-flash"
 
     # --- Cron ---------------------------------------------------------------
     # Shared secret for POST /classroom/cron/sync. The hourly GitHub Action is

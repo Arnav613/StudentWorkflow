@@ -53,5 +53,8 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       # Named here so a rate-limited afternoon is an env var, not a deploy.
+      # Google retires these mid-term: 2.0-flash started 404ing in August 2026
+      # with the successor named in the error body. Override in the dashboard
+      # for an instant fix, then bring this line along with it.
       - key: GEMINI_MODEL
-        value: gemini-2.0-flash
+        value: gemini-3.6-flash
