@@ -43,6 +43,13 @@ create table proposals (
 
   -- Where the guess came from, in Google's own ids, so the announcement text
   -- can be shown beside the proposal and so the pair can be deduped.
+  --
+  -- For an announcement this is `<announcement_id>#<n>`, because one post can
+  -- state several deadlines — "essay Friday, presentations the 12th, final
+  -- paper on the 30th" is one announcement and three pieces of work. The
+  -- ordinal is what gives each its own card, its own accept, and its own
+  -- remembered "no"; text rather than a foreign key is precisely what lets a
+  -- future source_kind number itself however it needs to.
   source_kind text not null check (source_kind in ('announcement')),
   source_id   text not null,
 

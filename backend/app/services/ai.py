@@ -120,52 +120,86 @@ async def _generate(prompt: str, schema: dict, *, system: str) -> dict:
 # Deadlines hidden in announcement prose
 # ---------------------------------------------------------------------------
 
+# A runaway guard, not an editorial limit.
+#
+# "Here is the plan for the rest of term" is an ordinary post and can honestly
+# carry five or six dates, all of which are real work the student owes. This
+# exists only so a malformed answer or a pathological wall of text cannot turn
+# one announcement into forty cards. Anything past it is dropped, and the
+# dropped ones are the least prominent — the model is asked to lead with what
+# matters.
+MAX_DEADLINES = 10
+
 _DEADLINE_SYSTEM = """\
 You read a single Google Classroom announcement written by a university
-professor and decide one thing: does it state a deadline the student must
-meet?
+professor and find every deadline it states.
 
-Say yes only for a due date the announcement itself states. A lecture time, an
+Usually there are none, and that is the expected answer: return an empty list.
+Sometimes there is one. Occasionally a post sets out a plan for the rest of
+term and states several, and then you must return all of them — a professor
+listing three dates in one paragraph is one post and three pieces of work.
+
+Include only a due date the announcement itself states. A lecture time, an
 office hour, a room change, a reading suggestion, a reminder of a deadline
-with no date in it, and an encouragement to start early are all no.
+with no date in it, and an encouragement to start early are all excluded.
 
 If the announcement changes a date that already exists ("the essay is now due
-Friday"), that is yes — a change is the case that matters most.
+Friday"), include it — a change is the case that matters most.
 
 Resolve relative dates ("next Friday", "in two weeks") against the date the
 announcement was posted, which you are given. If you cannot resolve a date to
-a specific calendar day, answer no. A guessed day is worse than no answer.
+a specific calendar day, leave that one out. A guessed day is worse than no
+answer.
 
-`title` is what is due, as a student would write it on a to-do list: short, no
-date in it, no "reminder" or "announcement". `excerpt` is the professor's own
-sentence, quoted exactly and unedited, that states the deadline.
+Do not list the same deadline twice because it is mentioned twice.
+
+Order them by how prominent they are in the announcement, most prominent
+first.
+
+For each: `title` is what is due, as a student would write it on a to-do list
+— short, no date in it, no "reminder" or "announcement". `excerpt` is the
+professor's own sentence, quoted exactly and unedited, that states that
+particular deadline.
 """
 
 _DEADLINE_SCHEMA = {
     "type": "object",
     "properties": {
-        "found": {"type": "boolean"},
-        "title": {"type": "string"},
-        "due_date": {"type": "string", "description": "YYYY-MM-DD"},
-        "excerpt": {"type": "string"},
+        "deadlines": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "due_date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "excerpt": {"type": "string"},
+                },
+                "required": ["title", "due_date"],
+            },
+        }
     },
-    "required": ["found"],
+    "required": ["deadlines"],
 }
 
 
-async def propose_deadline(
+async def propose_deadlines(
     *, course_name: str, posted_on: date, text: str
-) -> DeadlineProposal | None:
-    """A deadline stated in an announcement, or None — which is the usual answer.
+) -> list[DeadlineProposal]:
+    """Every deadline an announcement states, which is usually none.
 
-    None covers both "the model found nothing" and "the model found something
-    it could not pin to a day". Neither is an error, and the caller marks the
-    announcement seen either way: an announcement about a room change will
-    never become a deadline no matter how often it is re-read.
+    An empty list covers both "the model found nothing" and "the model found
+    something it could not pin to a day". Neither is an error, and the caller
+    marks the announcement seen either way: an announcement about a room change
+    will never become a deadline no matter how often it is re-read.
+
+    This returns a list rather than one result because a professor setting out
+    a term plan states several dates in a single post, and the first version of
+    this function could only ever report one of them. The other two were
+    dropped in silence, which is the one failure this app is not allowed.
     """
     prose = text.strip()[:MAX_PROSE_CHARS]
     if not prose:
-        return None
+        return []
 
     out = await _generate(
         f"Course: {course_name}\nPosted on: {posted_on.isoformat()}\n\n"
@@ -174,25 +208,47 @@ async def propose_deadline(
         system=_DEADLINE_SYSTEM,
     )
 
-    if not out.get("found"):
-        return None
+    raw = out.get("deadlines")
+    if not isinstance(raw, list):
+        return []
 
-    due = (out.get("due_date") or "").strip()
-    title = (out.get("title") or "").strip()
-    try:
-        parsed = date.fromisoformat(due)
-    except ValueError:
-        # The schema asked for a date and got something else. A proposal with
-        # an unparseable date is not a weaker proposal, it is not one.
-        return None
-    if not title:
-        return None
+    found: list[DeadlineProposal] = []
+    # Deduped on what the proposal actually is. The prompt asks for no repeats
+    # and mostly gets none; this is the check that does not depend on asking.
+    seen: set[tuple[str, str]] = set()
 
-    return DeadlineProposal(
-        title=title[:200],
-        due_at=parsed.isoformat(),
-        excerpt=(out.get("excerpt") or "").strip()[:500],
-    )
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+
+        title = (item.get("title") or "").strip()
+        due = (item.get("due_date") or "").strip()
+        if not title:
+            continue
+        try:
+            parsed = date.fromisoformat(due)
+        except (TypeError, ValueError):
+            # The schema asked for a date and got something else. A proposal
+            # with an unparseable date is not a weaker proposal, it is not one.
+            continue
+
+        key = (title.casefold(), parsed.isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        found.append(
+            DeadlineProposal(
+                title=title[:200],
+                due_at=parsed.isoformat(),
+                excerpt=(item.get("excerpt") or "").strip()[:500],
+            )
+        )
+
+        if len(found) == MAX_DEADLINES:
+            break
+
+    return found
 
 
 # ---------------------------------------------------------------------------

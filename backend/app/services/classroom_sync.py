@@ -465,7 +465,7 @@ async def _read_announcements(
             continue
 
         try:
-            found = await ai.propose_deadline(
+            found = await ai.propose_deadlines(
                 course_name=klass["name"],
                 posted_on=posted.date(),
                 text=text,
@@ -483,7 +483,20 @@ async def _read_announcements(
 
         report.announcements_read += 1
 
-        if found is not None:
+        # One row per deadline, not per announcement.
+        #
+        # "Here is the plan for the rest of term: essay Friday, presentations
+        # the 12th, final paper on the 30th" is an ordinary post, and an
+        # earlier version of this loop kept the essay and dropped the other two
+        # without saying so. Each now gets its own card, its own accept, and
+        # its own remembered "no".
+        #
+        # The ordinal is what makes that possible. `source_id` is a text
+        # column and the unique constraint is on it, so suffixing the index
+        # gives every deadline in a post its own identity without a migration.
+        # It is stable because the model is asked for a stable order and the
+        # announcement is only ever read once anyway.
+        for index, deadline in enumerate(found):
             try:
                 await db.insert(
                     "proposals",
@@ -492,11 +505,11 @@ async def _read_announcements(
                         "class_id": klass["id"],
                         "kind": "deadline",
                         "source_kind": "announcement",
-                        "source_id": ann_id,
+                        "source_id": f"{ann_id}#{index}",
                         "payload": {
-                            "title": found.title,
-                            "due_date": found.due_at,
-                            "excerpt": found.excerpt,
+                            "title": deadline.title,
+                            "due_date": deadline.due_at,
+                            "excerpt": deadline.excerpt,
                             # Kept so the queue can offer "open the original"
                             # — a proposal you cannot check at the source is
                             # one you can only take on faith.
