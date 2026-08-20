@@ -8,9 +8,12 @@
  * keeps the work that genuinely needs a server: Classroom sync, refresh
  * tokens, the hourly cron, AI later.
  *
- * Every write below omits user_id. It is not forgotten — the RLS policies use
- * `auth.uid()`, and the column defaults are set from the session, so passing
- * it from the client would be both redundant and the wrong place to trust it.
+ * Every write below passes user_id explicitly, and must. The RLS policies are
+ * `with check (auth.uid() = user_id)`, and no table in this schema defaults the
+ * column to `auth.uid()` — so an insert that leaves it out is not defaulted, it
+ * is rejected. A version of this comment used to claim the opposite, which cost
+ * phase 10 an afternoon: the policy checks the column, and something has to put
+ * a value in it.
  */
 
 import { supabase } from "./supabase";
@@ -1155,6 +1158,7 @@ export async function uploadClassDocument(input: {
     await supabase
       .from("class_documents")
       .insert({
+        user_id,
         class_id,
         kind,
         title: file.name.slice(0, 200),
@@ -1248,6 +1252,7 @@ export async function listSessionsBetween(
  * doubling the term.
  */
 export async function replaceSessionsForDocument(input: {
+  user_id: string;
   class_id: string;
   document_id: string;
   rows: Array<{
@@ -1270,6 +1275,7 @@ export async function replaceSessionsForDocument(input: {
       .from("class_sessions")
       .insert(
         input.rows.map((r) => ({
+          user_id: input.user_id,
           class_id: input.class_id,
           document_id: input.document_id,
           ...r,
@@ -1332,6 +1338,7 @@ export async function listCriteria(rubricId: string): Promise<RubricCriterion[]>
  * the person who was handed the mark.
  */
 export async function createRubric(input: {
+  user_id: string;
   class_id: string;
   document_id: string | null;
   title: string;
@@ -1341,6 +1348,7 @@ export async function createRubric(input: {
     await supabase
       .from("rubrics")
       .insert({
+        user_id: input.user_id,
         class_id: input.class_id,
         document_id: input.document_id,
         title: input.title,
@@ -1352,6 +1360,7 @@ export async function createRubric(input: {
   if (input.criteria.length) {
     const { error } = await supabase.from("rubric_criteria").insert(
       input.criteria.map((c, i) => ({
+        user_id: input.user_id,
         rubric_id: rubric.id,
         label: c.label,
         weight: c.weight,
@@ -1366,6 +1375,7 @@ export async function createRubric(input: {
 }
 
 export async function addCriterion(input: {
+  user_id: string;
   rubric_id: string;
   label: string;
   weight: number;

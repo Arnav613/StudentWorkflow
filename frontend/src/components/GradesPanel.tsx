@@ -113,6 +113,7 @@ export default function GradesPanel({
         }));
 
       await db.createRubric({
+        user_id: userId,
         class_id: classId,
         document_id: draftDoc?.id ?? null,
         title: draftTitle.trim() || "Rubric",
@@ -167,6 +168,7 @@ export default function GradesPanel({
     try {
       const list = criteria[rubricId] ?? [];
       const saved = await db.addCriterion({
+        user_id: userId,
         rubric_id: rubricId,
         label: "",
         weight: 0,

@@ -112,6 +112,7 @@ export default function TimetablePanel({
         }));
 
       await db.replaceSessionsForDocument({
+        user_id: userId,
         class_id: classId,
         document_id: draftDoc.id,
         rows,
