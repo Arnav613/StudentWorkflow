@@ -121,7 +121,7 @@ export type BusyInterval = { starts_at: string; ends_at: string };
 /** Everything the planner reads off a task. Nothing else on the row matters. */
 export type PlannableTask = Pick<
   Task,
-  "id" | "class_id" | "due_at" | "status" | "estimate_minutes"
+  "id" | "class_id" | "due_at" | "status" | "estimate_minutes" | "plan_skip_until"
 >;
 
 /** A block the planner decided on. Shaped for insert; no id until it is saved. */
@@ -148,7 +148,11 @@ export type Unplaced = {
 export type PlanInput = {
   tasks: PlannableTask[];
   routines: Routine[];
-  /** Read-only from Google Calendar. Times only; no titles ever leave Google. */
+  /**
+   * Hours already spent: Google Calendar, read-only, times only and no titles
+   * ever leaving Google — and, since phase 13, blackouts. Two sources, one
+   * list, because the difference between them changes nothing here.
+   */
   busy: BusyInterval[];
   /** Blocks a person placed by hand. Immovable, and planned around. */
   locked: PlanBlock[];
@@ -181,6 +185,26 @@ export type Interval = { start: number; end: number };
  * Median rather than mean: one 8-hour term paper should not turn every
  * unestimated reading in the course into a four-hour job.
  */
+/**
+ * "Leave it until Monday" — is that still true today?
+ *
+ * Phase 13's one addition to the planner, and deliberately the smallest one
+ * that could work: a date on the task, compared against the day being planned
+ * from. Nothing sweeps the column and nothing expires it — the comparison
+ * simply stops being true, which is why a deferral cannot rot into a task
+ * that quietly never gets planned again.
+ *
+ * The *logical* day, so a deferral entered at one in the morning still means
+ * the night you are having rather than the one after it. See DAY_ROLLOVER_HOUR.
+ */
+export function deferred(
+  task: Pick<PlannableTask, "plan_skip_until">,
+  from: Date,
+): boolean {
+  if (!task.plan_skip_until) return false;
+  return task.plan_skip_until > isoDate(logicalDayOf(from));
+}
+
 export function classMedians(tasks: PlannableTask[]): Map<string, number> {
   const byClass = new Map<string, number[]>();
   for (const t of tasks) {
@@ -377,6 +401,28 @@ export function isoDate(d: Date): string {
 }
 
 /** "Wed 27 Aug" — an `on_date` as a person reads it, in the local calendar. */
+/**
+ * An instant, written down without leaving the timezone it happened in.
+ *
+ * `toISOString` is UTC, and UTC is the wrong answer for the two things phase
+ * 13 sends to the server: the horizon, whose date half is read as "today",
+ * and a blackout, which is an afternoon in the city you are standing in. In
+ * India both are five and a half hours from midnight, so the UTC date of a
+ * local midnight is yesterday — and "leave it until tomorrow" would come back
+ * meaning today.
+ */
+export function localIso(d: Date): string {
+  const pad = (n: number) => String(Math.floor(Math.abs(n))).padStart(2, "0");
+  // getTimezoneOffset is minutes *behind* UTC, so the sign is inverted.
+  const offset = -d.getTimezoneOffset();
+  const sign = offset < 0 ? "-" : "+";
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+    `${sign}${pad(offset / 60)}:${pad(offset % 60)}`
+  );
+}
+
 export function formatSessionDate(iso: string): string {
   const d = new Date(`${iso}T00:00:00`);
   if (Number.isNaN(d.getTime())) return iso;
@@ -508,7 +554,10 @@ export function commitments({
     }
   }
 
-  // 2. Busy intervals from Google. See routers/calendar.py.
+  // 2. Intervals that are simply gone: lectures from Google (see
+  // routers/calendar.py) and phase 13's blackouts. They occupy time and emit
+  // no block, which is the whole reason both can share one list — the
+  // scheduler has never needed to know what a busy hour was for.
   for (const b of busy) {
     const start = Date.parse(b.starts_at);
     const end = Date.parse(b.ends_at);
@@ -584,7 +633,14 @@ export function planWeek({
   // must never displace "Thursday" — and among equals the shorter job goes
   // first, so a week ends with more things finished rather than more started.
   const queue = tasks
-    .filter((t) => t.status !== "done")
+    /*
+     * Done work, and work you have said can wait. The second is phase 13:
+     * the task keeps its deadline, keeps its card and keeps its place in the
+     * rail — it just gets no hours this side of the date you named. Filtering
+     * it here rather than deleting anything is what makes "actually, do it
+     * after all" a single field going back to null.
+     */
+    .filter((t) => t.status !== "done" && !deferred(t, from))
     .map((t) => {
       const { minutes, guessed } = estimateFor(t, medians);
       const due = t.due_at ? Date.parse(t.due_at) : Number.POSITIVE_INFINITY;
@@ -704,7 +760,14 @@ export function unscheduled(
   blocks: { task_id: string | null; starts_at: string; ends_at: string }[],
   medians?: Map<string, number>,
   now: number = Date.now(),
-): { task_id: string; minutes: number; guessed: boolean; missed: boolean }[] {
+): {
+  task_id: string;
+  minutes: number;
+  guessed: boolean;
+  missed: boolean;
+  /** Deferred by phase 13's agent or by hand. Still owed, just not this week. */
+  deferred: boolean;
+}[] {
   const planned = new Map<string, number>();
   const lapsed = new Set<string>();
 
@@ -738,6 +801,14 @@ export function unscheduled(
         minutes: Math.round(minutes - (planned.get(t.id) ?? 0)),
         guessed,
         missed: lapsed.has(t.id),
+        /*
+         * Deferred work stays in this list on purpose. The rail is the app's
+         * one honest account of what has no hour against it, and a task that
+         * disappeared from it the moment something said "next week" would be
+         * the planner hiding the work rather than scheduling it. It is shown,
+         * and it is labelled.
+         */
+        deferred: deferred(t, new Date(now)),
       };
     })
     // A minute or two of rounding slack is not an unplanned task. Anything

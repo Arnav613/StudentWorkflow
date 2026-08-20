@@ -18,6 +18,7 @@
 
 import { supabase } from "./supabase";
 import type {
+  Blackout,
   Class,
   CalendarSeries,
   ChecklistItem,
@@ -579,6 +580,113 @@ export async function updateRoutine(
 export async function deleteRoutine(id: string): Promise<void> {
   const { error } = await supabase.from("routines").delete().eq("id", id);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Blackouts — phase 13
+// ---------------------------------------------------------------------------
+//
+// Hours that are gone and are not a routine and are not work. They never
+// become plan_blocks: the planner reads them as busy and the grid draws them
+// as a band behind everything else, which keeps one row the single answer to
+// "am I out on Wednesday" instead of a row and a block that can disagree.
+
+/** Everything from a given instant on. Past blackouts are nobody's business. */
+export async function listBlackouts(from: Date): Promise<Blackout[]> {
+  return unwrap(
+    await supabase
+      .from("blackouts")
+      .select("*")
+      .gte("ends_at", from.toISOString())
+      .order("starts_at"),
+  );
+}
+
+export async function createBlackout(input: {
+  user_id: string;
+  starts_at: string;
+  ends_at: string;
+  reason?: string | null;
+}): Promise<Blackout> {
+  return unwrap(await supabase.from("blackouts").insert(input).select().single());
+}
+
+export async function createBlackouts(
+  rows: {
+    user_id: string;
+    starts_at: string;
+    ends_at: string;
+    reason?: string | null;
+  }[],
+): Promise<Blackout[]> {
+  if (!rows.length) return [];
+  return unwrap(await supabase.from("blackouts").insert(rows).select());
+}
+
+export async function deleteBlackout(id: string): Promise<void> {
+  const { error } = await supabase.from("blackouts").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Deferring a task — phase 13
+// ---------------------------------------------------------------------------
+
+/**
+ * "Not before this date." Null undoes it.
+ *
+ * Its own function rather than a field on `updateTask`'s patch, because it is
+ * the one write in the app that exists solely to instruct the planner, and
+ * keeping it separate is what stops a due date and a deferral ever being sent
+ * in the same object by accident. The model may propose this; it may not
+ * propose `due_at`, and the two must not share a door.
+ */
+export async function setPlanSkip(
+  id: string,
+  until: string | null,
+): Promise<Task> {
+  return unwrap(
+    await supabase
+      .from("tasks")
+      .update({ plan_skip_until: until })
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
+/**
+ * Half of it this week, half of it later — as two real cards.
+ *
+ * The planner already breaks work into ninety-minute sessions on its own, so
+ * "split" here cannot mean that. It means the thing genuinely divides: the
+ * reading is two hours and one of them is going to happen. So the original
+ * keeps its title, its class and its deadline at the smaller estimate, and a
+ * second task carries the rest — tickable on its own, countable on its own,
+ * and visible on the board rather than hidden inside an estimate that quietly
+ * got smaller.
+ *
+ * Both keep the deadline. The work did not become less due because it became
+ * two cards, and writing a later date on the remainder would be the split
+ * moving a deadline by the back door.
+ */
+export async function splitTask(
+  task: Task,
+  keepMinutes: number,
+  rest: { title: string; minutes: number },
+): Promise<{ kept: Task; created: Task }> {
+  const created = await createTask({
+    user_id: task.user_id,
+    title: rest.title,
+    class_id: task.class_id,
+    due_at: task.due_at,
+    status: task.status,
+    estimate_minutes: Math.max(1, Math.round(rest.minutes)),
+  });
+  const kept = await updateTask(task.id, {
+    estimate_minutes: Math.max(1, Math.round(keepMinutes)),
+  });
+  return { kept, created };
 }
 
 // ---------------------------------------------------------------------------

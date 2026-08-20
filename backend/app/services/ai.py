@@ -28,7 +28,7 @@ import io
 import json
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import httpx
 import pypdf
@@ -84,13 +84,28 @@ def enabled() -> bool:
 
 async def _generate(prompt: str, schema: dict, *, system: str) -> dict:
     """One call. Every AI feature in the app goes through this function."""
+    return await _generate_turns(
+        [{"role": "user", "parts": [{"text": prompt}]}], schema, system=system
+    )
+
+
+async def _generate_turns(contents: list[dict], schema: dict, *, system: str) -> dict:
+    """The same call, for the one feature that has more than one turn.
+
+    Phase 13's planner is a conversation — "no, keep Wednesday free instead" is
+    only meaningful against what was said before it — so the contents list is
+    handed in rather than built from a single string. Everything else is
+    unchanged and deliberately so: same schema discipline, same timeout, same
+    single client. There is still exactly one place in this app that talks to a
+    model.
+    """
     settings = get_settings()
     if not settings.ai_ready:
         raise AiUnavailable("AI is turned off on this deployment")
 
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "contents": contents,
         "generationConfig": {
             "responseMimeType": "application/json",
             "responseSchema": schema,
@@ -1002,3 +1017,384 @@ async def extract_rubric(
 
     title = (out.get("title") or "").strip()[:200]
     return title or f"{course_name} rubric"[:200], rows
+
+
+# ---------------------------------------------------------------------------
+# Arguing with the planner — phase 13
+# ---------------------------------------------------------------------------
+#
+# The rule this section exists to enforce, and the only one that matters:
+# **the model changes the inputs, never the output.** It cannot emit a plan
+# block. It cannot name an hour at which to do the essay. Everything it is
+# allowed to say is an edit to something `planWeek` reads — an estimate, a
+# blackout, a deferral, a split — and then the ordinary deterministic planner
+# runs and produces every block on the grid, exactly as the button already
+# does. A model emitting blocks directly would be a second scheduler with no
+# rules, indistinguishable from the first on screen and impossible to reason
+# about when it puts a session at 3am.
+#
+# Everything below is a bound on that. The four edit kinds are a closed set,
+# `_clean_edits` drops anything outside it, and a task id the browser did not
+# send is not a task.
+
+# A week's worth. Beyond this the prompt is a bill rather than a week, and
+# nobody has sixty live tasks they are willing to discuss in one sentence.
+MAX_PLAN_TASKS = 60
+
+# The conversation dies with the tab, but it should not grow without limit
+# inside it either — a long argument is re-sent whole on every turn.
+MAX_TURNS = 12
+MAX_TURN_CHARS = 1000
+
+# What a single answer may propose. A reply rewriting thirty things is not a
+# reply to "I am dead on Wednesday", it is a new plan wearing a diff's clothes.
+MAX_EDITS = 12
+
+_PLAN_SYSTEM = """\
+You help a university student adjust the inputs to their week planner.
+
+You do NOT schedule anything. You never say when a task should happen, never
+name an hour for work, and never produce a timetable. A deterministic planner
+runs immediately after you and decides every single block. Your only job is to
+change what that planner is given, so that when it runs it produces the week
+the student is describing.
+
+You may propose exactly four kinds of edit:
+
+  estimate  - set how many minutes a task takes. Use this when a task has no
+              estimate, or when the student tells you one is wrong.
+  blackout  - mark an interval as unavailable. Use this for "I am out on
+              Wednesday afternoon", "nothing after 9pm on Thursday", "I am
+              travelling Friday". One edit per continuous interval, per day.
+  defer     - tell the planner not to spend hours on a task before a given
+              date. Use this when the student says something can wait, or when
+              the week plainly does not fit and they have said what matters
+              less. This does NOT change the deadline, and if the deadline
+              falls before the date you propose you must say so.
+  split     - divide one task into two, when the student wants to do part of
+              it now. The original keeps a smaller estimate and the remainder
+              becomes a second task with its own title.
+
+Hard rules:
+
+- You never change a due date. You have no way to and must not claim to.
+- You never touch grades, notes, or anything not in the week you were given.
+- Only use task ids that appear in the week you were given.
+- Blackout times are ISO 8601 with an offset, and must fall inside the
+  planning horizon you were given.
+- If a request is vague, ask a short question in `message` and return no
+  edits. An empty edit list is a perfectly good answer.
+- If the student asks for something you cannot express with these four kinds,
+  say so plainly in `message` and return no edits. Do not approximate it with
+  an edit that means something else.
+- Every edit carries `why` - one short clause naming the reason, in the
+  student's own terms. It is shown next to the edit before they accept it.
+
+`message` is two or three sentences at most, addressed to the student, saying
+what you changed and what it will cost them. Do not list the edits in prose;
+they are shown as a list underneath. If the week still will not fit after your
+edits, say that.
+"""
+
+_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "message": {"type": "string"},
+        "edits": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["estimate", "blackout", "defer", "split"],
+                    },
+                    "why": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "minutes": {"type": "integer"},
+                    "starts_at": {"type": "string"},
+                    "ends_at": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "until": {"type": "string"},
+                    "keep_minutes": {"type": "integer"},
+                    "rest_title": {"type": "string"},
+                    "rest_minutes": {"type": "integer"},
+                },
+                "required": ["kind", "why"],
+            },
+        },
+    },
+    "required": ["message", "edits"],
+}
+
+
+@dataclass(frozen=True)
+class PlanEdit:
+    """One change to what the planner will be handed. Never a plan block.
+
+    Deliberately one flat shape rather than four classes. It crosses two
+    process boundaries as JSON and is rendered by one list component; four
+    payload types would buy type safety in the middle of a pipeline whose ends
+    are both untyped anyway, and would cost the browser a discriminated union
+    for four rows on a screen.
+    """
+
+    kind: str
+    why: str
+    task_id: str | None = None
+    minutes: int | None = None
+    starts_at: str | None = None
+    ends_at: str | None = None
+    reason: str | None = None
+    until: str | None = None
+    keep_minutes: int | None = None
+    rest_title: str | None = None
+    rest_minutes: int | None = None
+
+
+@dataclass(frozen=True)
+class PlanTask:
+    """A task, as the planner sees it. Not as the board sees it.
+
+    No description, no notes, no checklist, no source, no Classroom id. The
+    week is what is being discussed and the week is title, class, deadline and
+    length - everything else is a wider leak bought for no better answer.
+    """
+
+    id: str
+    title: str
+    class_name: str
+    due_on: str | None
+    estimate_minutes: int | None
+    planned_minutes: int
+    deferred_until: str | None
+
+
+@dataclass(frozen=True)
+class PlanAdvice:
+    message: str
+    edits: list[PlanEdit]
+
+
+# Bounds on a single edit, applied after the model has spoken. The schema
+# constrains shape; these constrain sense.
+MIN_EDIT_MINUTES = 5
+MAX_EDIT_MINUTES = 8 * 60
+
+
+def _edit_minutes(value: object) -> int | None:
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not MIN_EDIT_MINUTES <= n <= MAX_EDIT_MINUTES:
+        return None
+    # To the five minutes the pickers already offer. A 37-minute estimate is
+    # not more accurate than 35, it is only harder to believe.
+    return max(MIN_EDIT_MINUTES, round(n / 5) * 5)
+
+
+def _plus_days(iso_date: str, days: int) -> str:
+    return (date.fromisoformat(iso_date) + timedelta(days=days)).isoformat()
+
+
+def _clean_edits(
+    raw: object, *, task_ids: set[str], horizon: tuple[str, str]
+) -> list[PlanEdit]:
+    """Everything the model said, minus everything it was not allowed to say.
+
+    This function is the fence, and it assumes nothing about the prompt above
+    it holding. A task id that was never sent is not a task; a blackout outside
+    the seven days being planned is not a blackout; an edit missing the field
+    that gives it meaning is dropped rather than defaulted, because a defaulted
+    estimate is the app inventing a number and attributing it to a model.
+    """
+    if not isinstance(raw, list):
+        return []
+
+    start, end = horizon
+    out: list[PlanEdit] = []
+
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "")
+        why = str(item.get("why") or "").strip()[:200]
+        task_id = item.get("task_id")
+        task_id = task_id if isinstance(task_id, str) and task_id in task_ids else None
+
+        if kind == "estimate":
+            minutes = _edit_minutes(item.get("minutes"))
+            if task_id and minutes:
+                out.append(PlanEdit(kind, why, task_id=task_id, minutes=minutes))
+
+        elif kind == "blackout":
+            starts, ends = item.get("starts_at"), item.get("ends_at")
+            if not isinstance(starts, str) or not isinstance(ends, str):
+                continue
+            try:
+                begins = datetime.fromisoformat(starts)
+                finishes = datetime.fromisoformat(ends)
+            except ValueError:
+                continue
+            if begins.tzinfo is None or finishes.tzinfo is None:
+                # A local time with no offset is an hour the server would have
+                # to guess at, and it would guess UTC — which is five and a
+                # half hours away from everyone this app is for.
+                continue
+            if finishes <= begins:
+                continue
+            # Inside the week being planned. A blackout in November changes
+            # nothing about this plan and would sit on the grid saying nothing.
+            if begins < horizon_start(start) or finishes > horizon_start(end):
+                continue
+            out.append(
+                PlanEdit(
+                    kind,
+                    why,
+                    starts_at=begins.isoformat(),
+                    ends_at=finishes.isoformat(),
+                    reason=str(item.get("reason") or "").strip()[:120] or None,
+                )
+            )
+
+        elif kind == "defer":
+            until = item.get("until")
+            if not task_id or not isinstance(until, str):
+                continue
+            try:
+                date.fromisoformat(until)
+            except ValueError:
+                continue
+            # Not into the past, which defers nothing, and not so far out that
+            # "next week" has quietly become "never".
+            today = start[:10]
+            if until <= today or until > _plus_days(today, 60):
+                continue
+            out.append(PlanEdit(kind, why, task_id=task_id, until=until))
+
+        elif kind == "split":
+            keep = _edit_minutes(item.get("keep_minutes"))
+            rest = _edit_minutes(item.get("rest_minutes"))
+            title = str(item.get("rest_title") or "").strip()[:200]
+            if task_id and keep and rest and title:
+                out.append(
+                    PlanEdit(
+                        kind,
+                        why,
+                        task_id=task_id,
+                        keep_minutes=keep,
+                        rest_minutes=rest,
+                        rest_title=title,
+                    )
+                )
+
+        if len(out) == MAX_EDITS:
+            break
+
+    return out
+
+
+def horizon_start(value: str) -> datetime:
+    """One of the two horizon bounds, as an instant.
+
+    They arrive from the browser as ISO strings with an offset — the student's
+    own midnight and the same midnight seven days later — because the horizon
+    is a fact about the tab's timezone and this server has no opinion about
+    where anyone is sitting.
+    """
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise AiError("The planning horizon arrived without a timezone")
+    return parsed
+
+
+async def plan_advice(
+    *,
+    tasks: list[PlanTask],
+    routines: list[str],
+    blackouts: list[str],
+    unplaced: list[str],
+    horizon: tuple[str, str],
+    turns: list[tuple[str, str]],
+) -> PlanAdvice:
+    """One turn of the argument.
+
+    Stateless, like everything else in this file. The whole conversation is
+    handed in on every call and nothing about it is remembered here or written
+    down anywhere — see PLAN.md: a term of chat about which weeks went badly is
+    a far more revealing document than the task list it describes, and it is
+    worth nothing the next morning.
+
+    `turns` is (role, text), oldest first, ending with what was just typed. The
+    week is appended to that last turn rather than sent as a preamble, because
+    it changes every time an edit is accepted and the freshest copy is the one
+    that has to win.
+    """
+    if not turns:
+        raise AiError("Nothing was asked")
+
+    kept = tasks[:MAX_PLAN_TASKS]
+    week = {
+        "planning_from": horizon[0],
+        "planning_to": horizon[1],
+        "tasks": [
+            {
+                "id": t.id,
+                "title": t.title[:200],
+                "class": t.class_name[:100],
+                "due": t.due_on,
+                "estimate_minutes": t.estimate_minutes,
+                "already_planned_minutes": t.planned_minutes,
+                "deferred_until": t.deferred_until,
+            }
+            for t in kept
+        ],
+        "routines": routines[:40],
+        "blackouts": blackouts[:40],
+        "not_fitting": unplaced[:40],
+    }
+
+    recent = turns[-MAX_TURNS:]
+    contents: list[dict] = []
+    for role, text in recent[:-1]:
+        contents.append(
+            {
+                "role": "model" if role == "model" else "user",
+                "parts": [{"text": text[:MAX_TURN_CHARS]}],
+            }
+        )
+
+    last = recent[-1][1][:MAX_TURN_CHARS]
+    contents.append(
+        {
+            "role": "user",
+            "parts": [
+                {
+                    "text": (
+                        "The week as it currently stands:\n"
+                        + json.dumps(week, separators=(",", ":"))
+                        + "\n\nWhat I want:\n"
+                        + last
+                    )
+                }
+            ],
+        }
+    )
+
+    out = await _generate_turns(contents, _PLAN_SCHEMA, system=_PLAN_SYSTEM)
+
+    edits = _clean_edits(
+        out.get("edits"), task_ids={t.id for t in kept}, horizon=horizon
+    )
+    message = str(out.get("message") or "").strip()[:1200]
+    if not message:
+        # Silence with a diff attached is the one answer that must never reach
+        # a screen: the whole approval step depends on being told what it is
+        # you are about to agree to.
+        message = (
+            "Here is what I would change."
+            if edits
+            else "I could not work out what to change from that."
+        )
+    return PlanAdvice(message=message, edits=edits)

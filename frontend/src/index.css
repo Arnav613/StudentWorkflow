@@ -3263,3 +3263,162 @@ button.link.danger:hover:not(:disabled) {
 .lecture-link button {
   flex: none;
 }
+
+/* ===========================================================================
+   Blacked-out hours, and the planner you can argue with — phase 13
+   ========================================================================= */
+
+/*
+ * An absence on the chart.
+ *
+ * Hatched rather than filled, and behind everything: a solid band would read
+ * as another block on a grid where every solid bar is something you are doing,
+ * and Wednesday afternoon is the opposite of that. No pointer events either —
+ * there is nothing to click, and swallowing a drop would make an hour
+ * unplannable even after the blackout came off.
+ */
+.blackout-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 0.15rem 0.3rem;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 22%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 22%, transparent);
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--fg) 9%, transparent) 0 4px,
+    transparent 4px 9px
+  );
+}
+
+.blackout-band > span {
+  font-size: 0.65rem;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+/* ---- The list of them --------------------------------------------------- */
+
+.blackout-list {
+  margin-top: 0.2rem;
+}
+
+.blackout-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.3rem 0;
+}
+
+.blackout-when {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* The reason takes the slack, so Remove sits on the right edge of every row
+   rather than wherever the length of "dentist" happens to put it. */
+.blackout-row > .muted {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---- The chat ----------------------------------------------------------- */
+
+.planner-chat .chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  /* Tall enough for an exchange, capped so the panel never pushes the week
+     off the top of the screen. The conversation is the short part of this
+     feature; the diff is the part worth reading. */
+  max-height: 24rem;
+  overflow-y: auto;
+  margin-bottom: 0.9rem;
+  padding-right: 0.2rem;
+}
+
+.chat-line {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 46rem;
+}
+
+/* Yours on the right, its on the left — the one convention every chat shares,
+   and the reason neither line needs a name on it. */
+.chat-line.user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.chat-text {
+  margin: 0;
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--r-md, 9px);
+  background: var(--sunken);
+  white-space: pre-wrap;
+}
+
+.chat-line.user .chat-text {
+  background: var(--accent-soft);
+}
+
+/*
+ * The diff. The whole approval step is this box, so it is bordered, it is
+ * separate from the sentence above it, and it does not look like prose.
+ */
+.chat-diff {
+  align-self: stretch;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md, 9px);
+  padding: 0.6rem 0.7rem;
+  background: var(--surface);
+}
+
+/* Once it is answered it stops being a control and becomes a record: no
+   emphasis, nothing to press, and plainly in the past. */
+.chat-diff.settled {
+  border-color: var(--border);
+  opacity: 0.75;
+}
+
+.diff-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem 0;
+}
+
+.diff-what {
+  font-weight: 500;
+}
+
+.diff-actions {
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.chat-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.chat-form textarea {
+  flex: 1 1 auto;
+  resize: vertical;
+  min-height: 3.2rem;
+  font: inherit;
+}
+
+.chat-form button {
+  flex: none;
+}

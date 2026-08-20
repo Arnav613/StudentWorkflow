@@ -258,3 +258,224 @@ async def extract(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except ai.AiError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Arguing with the planner — phase 13
+# ---------------------------------------------------------------------------
+#
+# One route, one turn, nothing stored. It reads the week out of the database
+# under the caller's own id, sends it with the conversation, and returns a
+# message and a list of proposed edits. It writes nothing at all — not the
+# edits, not the conversation, not a proposals row.
+#
+# The edits are applied by the browser, on Accept, through the same
+# RLS-protected Supabase writes every other change in this app goes through,
+# and then `planWeek` runs there and produces the blocks. That is the phase 13
+# rule in one sentence: the model changes the inputs, the ordinary planner
+# makes the output.
+#
+# The week is assembled here rather than accepted from the request, because a
+# request that carried its own task list would be a request that could carry
+# somebody else's. The only thing taken on trust is the horizon, which is a
+# fact about the tab's timezone that this server has no way to know, and the
+# rail, whose ids are checked against the tasks this query returned.
+
+# What a person can type in one go. Long enough for a paragraph about a bad
+# week; short enough that it cannot become a document.
+MAX_MESSAGE_CHARS = 1000
+MAX_HISTORY = 24
+
+
+class PlanTurn(BaseModel):
+    """One line of the conversation. `role` is "user" or "model"."""
+
+    role: str
+    text: str
+
+
+class UnplacedItem(BaseModel):
+    task_id: str
+    minutes: int
+
+
+class PlanRequest(BaseModel):
+    turns: list[PlanTurn]
+    #: The horizon, in the browser's own timezone and with its offset attached.
+    from_at: str
+    to_at: str
+    unplaced: list[UnplacedItem] = []
+
+
+class PlanEditOut(BaseModel):
+    kind: str
+    why: str
+    task_id: str | None = None
+    minutes: int | None = None
+    starts_at: str | None = None
+    ends_at: str | None = None
+    reason: str | None = None
+    until: str | None = None
+    keep_minutes: int | None = None
+    rest_title: str | None = None
+    rest_minutes: int | None = None
+
+
+class PlanResponse(BaseModel):
+    """What was said, and what it would change. Nothing has changed yet.
+
+    Two fields and no id, because there is nothing to refer back to: reject it
+    and there is no row to mark rejected, reload the tab and the whole
+    exchange is gone. That is deliberate — see PLAN.md, phase 13.
+    """
+
+    message: str
+    edits: list[PlanEditOut] = []
+
+
+@router.post("/plan", response_model=PlanResponse)
+async def plan(
+    body: PlanRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> PlanResponse:
+    if not ai.enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI is turned off on this deployment",
+        )
+
+    turns = [
+        (t.role, t.text.strip()[:MAX_MESSAGE_CHARS])
+        for t in body.turns[-MAX_HISTORY:]
+        if t.text.strip()
+    ]
+    if not turns or turns[-1][0] != "user":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "There is nothing there to answer"
+        )
+
+    try:
+        begins = ai.horizon_start(body.from_at)
+        ends = ai.horizon_start(body.to_at)
+    except (ValueError, ai.AiError) as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "That is not a week I can read"
+        ) from exc
+    if ends <= begins:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "That week runs backwards")
+
+    # Service role bypasses RLS, so every read below carries the user filter
+    # itself. This is also the only list of task ids the model will be allowed
+    # to name — see `_clean_edits`.
+    tasks = await db.select("tasks", user_id=db.eq(user.id), status="neq.done")
+    classes = await db.select("classes", user_id=db.eq(user.id))
+    routines = await db.select("routines", user_id=db.eq(user.id), active="is.true")
+    blackouts = await db.select("blackouts", user_id=db.eq(user.id))
+    blocks = await db.select("plan_blocks", user_id=db.eq(user.id))
+
+    class_names = {c["id"]: c.get("name") or "" for c in classes}
+
+    # Minutes already set aside, per task, inside the horizon. The model needs
+    # this to tell "unestimated" from "estimated and already handled".
+    planned: dict[str, int] = {}
+    for b in blocks:
+        task_id = b.get("task_id")
+        if not task_id:
+            continue
+        try:
+            start = datetime.fromisoformat(b["starts_at"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(b["ends_at"].replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        if end <= begins or start >= ends:
+            continue
+        planned[task_id] = planned.get(task_id, 0) + int(
+            (end - start).total_seconds() // 60
+        )
+
+    live = [t for t in tasks if not t.get("archived_at")]
+    week_tasks = [
+        ai.PlanTask(
+            id=t["id"],
+            title=t.get("title") or "",
+            class_name=class_names.get(t.get("class_id"), ""),
+            due_on=(t.get("due_at") or "")[:10] or None,
+            estimate_minutes=t.get("estimate_minutes"),
+            planned_minutes=planned.get(t["id"], 0),
+            deferred_until=t.get("plan_skip_until"),
+        )
+        for t in live
+    ]
+
+    owned = {t["id"] for t in live}
+    titles = {t["id"]: (t.get("title") or "") for t in live}
+
+    return await _answer(
+        tasks=week_tasks,
+        routines=[
+            f"{r.get('title') or 'Routine'} — "
+            f"{'every day' if r.get('weekday') is None else _WEEKDAYS[int(r['weekday'])]}"
+            f" at {str(r.get('time_of_day') or '')[:5]} for "
+            f"{r.get('duration_minutes')} minutes"
+            for r in routines
+        ],
+        blackouts=[
+            f"{b['starts_at']} to {b['ends_at']}"
+            + (f" ({b['reason']})" if b.get("reason") else "")
+            for b in blackouts
+            if b.get("starts_at") and b.get("ends_at")
+        ],
+        unplaced=[
+            f"{titles[u.task_id]} — {u.minutes} minutes with no hour against it"
+            for u in body.unplaced
+            if u.task_id in owned
+        ],
+        horizon=(body.from_at, body.to_at),
+        turns=turns,
+    )
+
+
+_WEEKDAYS = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+]
+
+
+async def _answer(**kwargs: object) -> PlanResponse:
+    """The call and its three failure modes, kept away from the assembly above.
+
+    A model that is off, a model that did not answer, and a model that
+    answered: three outcomes, and only the last of them is a plan. None of
+    them writes anything.
+    """
+    try:
+        advice = await ai.plan_advice(**kwargs)  # type: ignore[arg-type]
+    except ai.AiUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except ai.AiError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+    return PlanResponse(
+        message=advice.message,
+        edits=[
+            PlanEditOut(
+                kind=e.kind,
+                why=e.why,
+                task_id=e.task_id,
+                minutes=e.minutes,
+                starts_at=e.starts_at,
+                ends_at=e.ends_at,
+                reason=e.reason,
+                until=e.until,
+                keep_minutes=e.keep_minutes,
+                rest_title=e.rest_title,
+                rest_minutes=e.rest_minutes,
+            )
+            for e in advice.edits
+        ],
+    )

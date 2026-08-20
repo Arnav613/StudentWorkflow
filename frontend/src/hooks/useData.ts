@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as db from "../lib/db";
 import type {
+  Blackout,
   Class,
   PlanBlock,
   Routine,
@@ -30,6 +31,7 @@ export function useData(userId: string) {
   const [routineOverrides, setRoutineOverrides] = useState<RoutineOverride[]>([]);
   const [routineSkips, setRoutineSkips] = useState<RoutineSkip[]>([]);
   const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
+  const [blackouts, setBlackouts] = useState<Blackout[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,13 +64,16 @@ export function useData(userId: string) {
       // The plan blocks now include mirrored calendar events, which is the
       // point: the week grid draws lectures from this load, at the speed of
       // every other row, instead of waiting on Google after it has painted.
-      const [c, t, r, p, o, k] = await Promise.all([
+      const [c, t, r, p, o, k, b] = await Promise.all([
         db.listClasses(true),
         db.listTasks(),
         db.listRoutines(),
         db.listPlanBlocks(planFrom),
         db.listRoutineOverrides(),
         db.listRoutineSkips(),
+        // Phase 13. A handful of rows, bounded by the same horizon as the
+        // plan, and read by the one screen that already reads all the others.
+        db.listBlackouts(planFrom),
       ]);
       setClasses(c);
       setTasks(t);
@@ -76,6 +81,7 @@ export function useData(userId: string) {
       setPlanBlocks(p);
       setRoutineOverrides(o);
       setRoutineSkips(k);
+      setBlackouts(b);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -128,6 +134,7 @@ export function useData(userId: string) {
     routineOverrides,
     routineSkips,
     planBlocks,
+    blackouts,
     planFrom,
     loading,
     error,
@@ -139,6 +146,7 @@ export function useData(userId: string) {
     setRoutines,
     setRoutineOverrides,
     setPlanBlocks,
+    setBlackouts,
     userId,
   };
 }

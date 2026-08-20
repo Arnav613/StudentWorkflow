@@ -232,3 +232,66 @@ export const extractDocument = (document_id: string) =>
     method: "POST",
     body: JSON.stringify({ document_id }),
   });
+
+// ---------------------------------------------------------------------------
+// Arguing with the planner — phase 13
+// ---------------------------------------------------------------------------
+
+/**
+ * One change to what `planWeek` will be handed. Never a block.
+ *
+ * That is the whole of phase 13 in one type: there is no shape here that can
+ * express "do the essay at nine on Tuesday", because the model does not get to
+ * decide that. It fills in an estimate, blocks out an afternoon, defers a
+ * reading or splits a task, and then the same deterministic planner the button
+ * already calls produces every hour on the grid.
+ *
+ * One flat shape rather than a discriminated union of four. It is rendered by
+ * one list and applied by one switch; four types would cost more narrowing
+ * than they buy.
+ */
+export type PlanEdit = {
+  kind: "estimate" | "blackout" | "defer" | "split";
+  /** One clause naming the reason, shown beside the row before you accept. */
+  why: string;
+  task_id?: string | null;
+  minutes?: number | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  reason?: string | null;
+  until?: string | null;
+  keep_minutes?: number | null;
+  rest_title?: string | null;
+  rest_minutes?: number | null;
+};
+
+/**
+ * What was said, and what it would change — with nothing changed yet.
+ *
+ * No id, because there is nothing on the server to refer back to. The whole
+ * exchange lives in React state and dies with the tab: rejecting is forgetting
+ * and there is no row to mark rejected. See PLAN.md, phase 13.
+ */
+export type PlanAdvice = {
+  message: string;
+  edits: PlanEdit[];
+};
+
+export type PlanTurn = { role: "user" | "model"; text: string };
+
+/**
+ * Ask, with the whole conversation so far.
+ *
+ * The week itself is not sent. The backend reads it under the caller's own id,
+ * because a request that carried its own task list would be a request that
+ * could carry somebody else's. What does travel is the horizon — the browser
+ * is the only party that knows which midnight the student is standing in —
+ * and the Unplanned rail, whose ids are checked against that read.
+ */
+export const askPlanner = (body: {
+  turns: PlanTurn[];
+  from_at: string;
+  to_at: string;
+  unplaced: { task_id: string; minutes: number }[];
+}) =>
+  api<PlanAdvice>("/ai/plan", { method: "POST", body: JSON.stringify(body) });
