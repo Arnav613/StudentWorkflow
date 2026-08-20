@@ -9,3 +9,6 @@ httpx>=0.28.1
 python-dotenv>=1.1.1
 # Fernet, for the refresh tokens in google_tokens. See app/core/crypto.py.
 cryptography>=44.0
+# Page selection for the documents sent to the model. Pure Python on purpose:
+# a wheel that has to compile is a deploy that can fail on a free dyno.
+pypdf>=5.1

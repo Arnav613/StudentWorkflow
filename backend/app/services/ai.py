@@ -24,11 +24,14 @@ better retry than one that hammers a rate limit inside the same request.
 """
 
 import base64
+import io
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 
 import httpx
+import pypdf
 
 from app.core.config import get_settings
 
@@ -138,8 +141,14 @@ async def _generate(prompt: str, schema: dict, *, system: str) -> dict:
 MAX_DEADLINES = 10
 
 _DEADLINE_SYSTEM = """\
-You read a single Google Classroom announcement written by a university
-professor and find every deadline it states.
+You read Google Classroom announcements written by a university professor and
+find every deadline they state.
+
+You are given several announcements at once, each headed "--- Announcement N
+(posted YYYY-MM-DD) ---". Read every one of them. They are separate posts that
+happen to share a request: a date in one says nothing about any other, and you
+must never carry a deadline from one announcement across to another. Tag each
+deadline you return with the number of the announcement that states it.
 
 Usually there are none, and that is the expected answer: return an empty list.
 Sometimes there is one. Occasionally a post sets out a plan for the rest of
@@ -153,15 +162,19 @@ with no date in it, and an encouragement to start early are all excluded.
 If the announcement changes a date that already exists ("the essay is now due
 Friday"), include it — a change is the case that matters most.
 
-Resolve relative dates ("next Friday", "in two weeks") against the date the
-announcement was posted, which you are given. If you cannot resolve a date to
-a specific calendar day, leave that one out. A guessed day is worse than no
+Resolve relative dates ("next Friday", "in two weeks") against the date its
+own announcement was posted, which is given in that announcement's heading —
+not against any other announcement's date. If you cannot resolve a date to a
+specific calendar day, leave that one out. A guessed day is worse than no
 answer.
 
-Do not list the same deadline twice because it is mentioned twice.
+Within one announcement, do not list the same deadline twice because it is
+mentioned twice. Across announcements, do not deduplicate: if two posts each
+state the same deadline, that is one deadline from each of them, and both are
+returned under their own announcement number.
 
-Order them by how prominent they are in the announcement, most prominent
-first.
+Order the deadlines from one announcement by how prominent they are in it,
+most prominent first.
 
 For each: `title` is what is due, as a student would write it on a to-do list
 — short, no date in it, no "reminder" or "announcement". `excerpt` is the
@@ -189,44 +202,209 @@ _DEADLINE_SCHEMA = {
 }
 
 
-async def propose_deadlines(
-    *, course_name: str, posted_on: date, text: str
-) -> list[DeadlineProposal]:
-    """Every deadline an announcement states, which is usually none.
+# How many announcements ride in one request.
+#
+# The ceiling is not the model's context, which is far larger. It is blast
+# radius: one malformed answer costs every announcement in its batch a retry
+# next hour, and a batch of twenty-five is a cheap hour to lose where a batch
+# of four hundred is not. It is also what keeps the numbering the model has to
+# track short enough that it does not lose count.
+MAX_BATCH = 25
 
-    An empty list covers both "the model found nothing" and "the model found
-    something it could not pin to a day". Neither is an error, and the caller
-    marks the announcement seen either way: an announcement about a room change
-    will never become a deadline no matter how often it is re-read.
+# The whole prompt's prose budget, not each announcement's.
+#
+# MAX_PROSE_CHARS still bounds any single post, so one wall of text cannot
+# crowd out the twenty-four around it. This second ceiling is what stops
+# twenty-five ordinary posts from adding up to an unbounded request.
+MAX_BATCH_CHARS = 30000
 
-    This returns a list rather than one result because a professor setting out
-    a term plan states several dates in a single post, and the first version of
-    this function could only ever report one of them. The other two were
-    dropped in silence, which is the one failure this app is not allowed.
+
+# A date, in the shapes a professor actually writes one.
+_DATE_HINT = re.compile(
+    r"""
+      \b\d{1,2}\s*[/-]\s*\d{1,2}              # 12/03, 3-11
+    | \b\d{1,2}(st|nd|rd|th)?\s+(of\s+)?      # 12th of March, 3 March
+      (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)
+    | (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}
+    | \b(mon|tues|wednes|thurs|fri|satur|sun)day\b
+    | \b(today|tomorrow|tonight|midnight|noon)\b
+    | \bnext\s+week\b
+    | \bin\s+(a|one|two|three|four)\s+weeks?\b
+    | \bend\s+of\s+(the\s+)?(week|month|term|semester)\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# The vocabulary of owing someone work by a certain time.
+#
+# The trailing `(e?s)?` is not tidiness. "Presentations will be held March 12"
+# failed this gate while "presentation" passed it, and a plural that silently
+# drops a deadline is the exact failure the whole filter is written to avoid.
+_OBLIGATION_HINT = re.compile(
+    r"""
+    \b(
+        due | deadline | submit | submission | hand\s?-?in | turn\s?in
+      | upload | closes? | closing | cut\s?-?off | no\s+later\s+than
+      | exam | midterm | final | quiz | test | assessment
+      | assignment | essay | report | presentation | viva | lab\s+report
+      | extended | postponed | moved | rescheduled | brought\s+forward
+    )(e?s)?\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def might_state_a_deadline(text: str) -> bool:
+    """Whether this announcement is worth a model's attention.
+
+    Most announcements are a room change, a reading, an encouragement or a
+    thank-you, and reading those was the largest single expense in the app: one
+    request each, several hundred an hour on a first sync, against a free-tier
+    quota that counts requests and does not care that the answer was empty.
+
+    The gate is two cheap questions — does it name a time, and does it use the
+    language of owing work — and both must pass. That conjunction is the whole
+    design. "Office hours moved to Thursday" has a day and no obligation.
+    "Please start the essay early" has an obligation and no day. Neither is a
+    deadline, and neither now costs a request.
+
+    It is deliberately loose in the direction that matters. A false positive
+    costs one call that returns nothing, which is exactly the status quo. A
+    false negative costs a deadline the student never sees, which is the one
+    failure this app is not allowed — so both patterns lean toward letting
+    things through.
     """
-    prose = text.strip()[:MAX_PROSE_CHARS]
+    prose = text.strip()
     if not prose:
-        return []
+        return False
+    return bool(_DATE_HINT.search(prose) and _OBLIGATION_HINT.search(prose))
 
-    out = await _generate(
-        f"Course: {course_name}\nPosted on: {posted_on.isoformat()}\n\n"
-        f"Announcement:\n{prose}",
-        _DEADLINE_SCHEMA,
+
+@dataclass(frozen=True)
+class Announcement:
+    """One post, as this module needs it: an identity, and prose with a date."""
+
+    id: str
+    posted_on: date
+    text: str
+
+
+_BATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "deadlines": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "announcement": {
+                        "type": "integer",
+                        "description": "Number of the announcement this came from",
+                    },
+                    "title": {"type": "string"},
+                    "due_date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "excerpt": {"type": "string"},
+                },
+                "required": ["announcement", "title", "due_date"],
+            },
+        }
+    },
+    "required": ["deadlines"],
+}
+
+
+async def propose_deadlines(
+    *, course_name: str, announcements: list[Announcement]
+) -> dict[str, list[DeadlineProposal]]:
+    """Every deadline stated across a batch of announcements, by announcement.
+
+    One request reads many posts. The earlier version read exactly one, which
+    was the honest shape of the problem and the wrong shape for the quota: a
+    term's backlog on a first sync was several hundred requests inside a single
+    cron run, nearly all of them answering "nothing here".
+
+    Batching weakens no guarantee above it. Each proposal names the
+    announcement it came from, so the caller still writes one row per deadline
+    with its own `source_id` ordinal, its own accept and its own remembered no.
+    What changes is only how many times we ask.
+
+    The return is keyed by announcement id and is *sparse*: an announcement the
+    model found nothing in is absent, not present-and-empty. Callers mark every
+    announcement they sent as seen regardless, because "no deadline here" is a
+    permanent answer whether it arrived as an empty list or as silence.
+
+    A batch fails whole. Every announcement in it goes unmarked and the next
+    hourly pass re-reads them — the same free retry the one-at-a-time version
+    had, at a coarser grain.
+    """
+    batch = [a for a in announcements if a.text.strip()]
+    if not batch:
+        return {}
+
+    if len(batch) > MAX_BATCH:
+        # Chunked here rather than at the caller so the bound travels with the
+        # prompt it protects. Each chunk is its own request and its own failure.
+        out: dict[str, list[DeadlineProposal]] = {}
+        for at in range(0, len(batch), MAX_BATCH):
+            out.update(
+                await propose_deadlines(
+                    course_name=course_name, announcements=batch[at : at + MAX_BATCH]
+                )
+            )
+        return out
+
+    blocks: list[str] = []
+    numbered: list[Announcement] = []
+    budget = MAX_BATCH_CHARS
+
+    for post in batch:
+        prose = post.text.strip()[:MAX_PROSE_CHARS]
+        if len(prose) > budget and numbered:
+            # The budget is spent. What is left becomes another request rather
+            # than being dropped — a truncated batch loses posts, and a lost
+            # post is a lost deadline.
+            break
+        budget -= len(prose)
+        numbered.append(post)
+        blocks.append(
+            f"--- Announcement {len(numbered)} "
+            f"(posted {post.posted_on.isoformat()}) ---\n{prose}"
+        )
+
+    result = await _generate(
+        f"Course: {course_name}\n\n" + "\n\n".join(blocks),
+        _BATCH_SCHEMA,
         system=_DEADLINE_SYSTEM,
     )
 
-    raw = out.get("deadlines")
-    if not isinstance(raw, list):
-        return []
+    # Whatever the budget pushed out is a separate request, not a loss.
+    overflow: dict[str, list[DeadlineProposal]] = {}
+    if len(numbered) < len(batch):
+        overflow = await propose_deadlines(
+            course_name=course_name, announcements=batch[len(numbered) :]
+        )
 
-    found: list[DeadlineProposal] = []
-    # Deduped on what the proposal actually is. The prompt asks for no repeats
-    # and mostly gets none; this is the check that does not depend on asking.
-    seen: set[tuple[str, str]] = set()
+    raw = result.get("deadlines")
+    if not isinstance(raw, list):
+        return overflow
+
+    found: dict[str, list[DeadlineProposal]] = {}
+    # Deduped on what the proposal actually is, within one announcement. The
+    # prompt asks for no repeats and mostly gets none; this is the check that
+    # does not depend on asking.
+    seen: set[tuple[str, str, str]] = set()
 
     for item in raw:
         if not isinstance(item, dict):
             continue
+
+        index = item.get("announcement")
+        if not isinstance(index, int) or not 1 <= index <= len(numbered):
+            # A proposal that cannot say which post it came from cannot be
+            # shown beside that post's words, and an excerpt nobody can check
+            # against the professor is what the review queue exists to prevent.
+            continue
+        post = numbered[index - 1]
 
         title = (item.get("title") or "").strip()
         due = (item.get("due_date") or "").strip()
@@ -239,12 +417,16 @@ async def propose_deadlines(
             # with an unparseable date is not a weaker proposal, it is not one.
             continue
 
-        key = (title.casefold(), parsed.isoformat())
+        key = (post.id, title.casefold(), parsed.isoformat())
         if key in seen:
             continue
         seen.add(key)
 
-        found.append(
+        into = found.setdefault(post.id, [])
+        if len(into) == MAX_DEADLINES:
+            continue
+
+        into.append(
             DeadlineProposal(
                 title=title[:200],
                 due_at=parsed.isoformat(),
@@ -252,9 +434,7 @@ async def propose_deadlines(
             )
         )
 
-        if len(found) == MAX_DEADLINES:
-            break
-
+    found.update(overflow)
     return found
 
 
@@ -330,8 +510,139 @@ SUPPORTED_MIME = {
 }
 
 
+# Below this, slicing is not worth the risk of guessing wrong.
+#
+# A three-page handout costs 774 tokens whole. Picking two of those pages saves
+# 258 and introduces a way to drop the one that mattered, which is a bad trade.
+# The savings only become real on the long documents — a course pack with the
+# schedule buried on page 31 — and that is where this is aimed.
+MIN_PAGES_TO_SLICE = 5
+
+# The ceiling on what a slice may send.
+#
+# Generous on purpose. A timetable that runs across four pages is ordinary and
+# a rubric with an appendix of descriptors is ordinary, and a slice that cuts
+# either in half is worse than not slicing. This bounds the pathological case —
+# a document where every page looks relevant — not the normal one.
+MAX_PAGES_KEPT = 8
+
+# What a page about *when things happen* looks like.
+_TIMETABLE_PAGE_HINT = re.compile(
+    r"""
+      \b\d{1,2}\s*[/-]\s*\d{1,2}
+    | \b(mon|tues|wednes|thurs|fri|satur|sun)day\b
+    | (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}
+    | \bweek\s*\d{1,2}\b
+    | \b(lecture|seminar|tutorial|lab|workshop|session|topic)\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# What a page about *what counts for how much* looks like.
+_RUBRIC_PAGE_HINT = re.compile(
+    r"""
+      \d{1,3}\s*%
+    | \b(weight|weighting|weighted|marks?|mark\s+scheme|grading|graded)\b
+    | \b(rubric|criteri(a|on)|assessment|component|breakdown)\b
+    | \bout\s+of\s+\d{1,3}\b
+    | \b(total|overall)\s+(grade|mark|score)\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _slice_pdf(data: bytes, hint: re.Pattern[str]) -> tuple[bytes, int, int] | None:
+    """The pages of a PDF that look like they answer the question, or nothing.
+
+    Gemini bills a PDF at a flat rate per page and does not charge for the text
+    it pulls out, so the only way to make a long document cheaper is to send
+    fewer pages of it. A forty-page course pack whose schedule lives on pages
+    eleven and twelve costs forty pages to read two, every time someone presses
+    the button.
+
+    So the text is extracted here, locally and for free, and used for one thing
+    only: deciding which pages to send. It is never what the model reads. That
+    distinction is what makes a crude extractor good enough — the page numbers
+    survive a mangled table where the table's contents would not, and the model
+    still sees the real page, laid out, with its lines and columns intact.
+
+    Returns `(pdf, kept, total)`, or `None` meaning "send the original". None is
+    the answer for everything uncertain: an encrypted file, a damaged one, a
+    short one, a scan with no text layer, and a document where every page looks
+    relevant. Each of those is a case where slicing either saves nothing or
+    risks cutting the page the answer was on, and the whole document is always
+    a correct thing to send.
+    """
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            # Some encrypted PDFs open with an empty password, but one that
+            # does not would raise deep inside the page loop below. Not worth
+            # the branch: send it whole and let the model deal with it.
+            return None
+        pages = reader.pages
+        total = len(pages)
+        if total < MIN_PAGES_TO_SLICE:
+            return None
+
+        scores: list[int] = []
+        for page in pages:
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                # One unreadable page in an otherwise fine document. Scored
+                # zero rather than aborting the slice.
+                text = ""
+            scores.append(len(hint.findall(text)))
+    except Exception:
+        # Damaged, or not really a PDF. The model gets the original bytes and
+        # gives the user a better error than this function could.
+        return None
+
+    if not any(scores):
+        # No text layer at all, or nothing that looks like an answer. A scanned
+        # timetable is exactly this case, and it is precisely the document that
+        # must go to the model whole — its pages are images and only the model
+        # can read them.
+        return None
+
+    # Rank by score, keep the best, then put them back in reading order. A
+    # rubric read back to front is a rubric the model has to reassemble.
+    ranked = sorted(range(total), key=lambda n: (-scores[n], n))
+    keep = sorted(n for n in ranked[:MAX_PAGES_KEPT] if scores[n])
+
+    if len(keep) >= total:
+        # Every page looked relevant, so there is nothing to save and a
+        # re-encoded copy of the file is strictly worse than the file.
+        return None
+
+    try:
+        writer = pypdf.PdfWriter()
+        for n in keep:
+            writer.add_page(pages[n])
+        buffer = io.BytesIO()
+        writer.write(buffer)
+    except Exception:
+        return None
+
+    out = buffer.getvalue()
+    if not out or len(out) >= len(data):
+        # Rewriting made it bigger — a PDF whose bulk is one shared font, say.
+        # The page count is what is billed, so this is not a failure, but it is
+        # close enough to no gain that the original is the simpler answer.
+        return None
+
+    return out, len(keep), total
+
+
 async def _generate_from_file(
-    *, data: bytes, mime_type: str, prompt: str, schema: dict, system: str
+    *,
+    data: bytes,
+    mime_type: str,
+    prompt: str,
+    schema: dict,
+    system: str,
+    page_hint: re.Pattern[str] | None = None,
 ) -> dict:
     """`_generate`, with a document in front of the prompt.
 
@@ -350,6 +661,14 @@ async def _generate_from_file(
         raise AiError("That file is empty")
     if len(data) > MAX_FILE_BYTES:
         raise AiError("That file is too large to read")
+
+    # Trimmed after the size checks, not before: the bound that matters is on
+    # what the user uploaded, and a slice that shrinks a file under the limit
+    # would turn "too large to read" into a silent partial read.
+    if page_hint is not None and mime_type == "application/pdf":
+        sliced = _slice_pdf(data, page_hint)
+        if sliced is not None:
+            data, _kept, _total = sliced
 
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
@@ -495,6 +814,7 @@ async def extract_timetable(
             "says otherwise.\n\nRead the attached timetable."
         ),
         schema=_TIMETABLE_SCHEMA,
+        page_hint=_TIMETABLE_PAGE_HINT,
         system=_TIMETABLE_SYSTEM,
     )
 
@@ -642,6 +962,7 @@ async def extract_rubric(
         prompt=f"Course: {course_name}\n\nRead the attached rubric.",
         schema=_RUBRIC_SCHEMA,
         system=_RUBRIC_SYSTEM,
+        page_hint=_RUBRIC_PAGE_HINT,
     )
 
     raw = out.get("criteria")

@@ -440,15 +440,32 @@ async def _read_announcements(
     hallucinated deadline that wrote itself onto a Tuesday would end trust in
     every other date the app shows, and there are several hundred of those.
 
-    An announcement is marked seen whether or not it produced anything, and
-    that is the whole cost control: "no deadline here" is a permanent answer.
-    A failed call is deliberately *not* marked, so the next hourly pass retries
-    it for free rather than losing it.
+    An announcement is marked seen whether or not it produced anything, because
+    "no deadline here" is a permanent answer. A failed call is deliberately
+    *not* marked, so the next hourly pass retries it for free rather than
+    losing it.
+
+    Cost control is now two things in front of that, and both exist because the
+    free tier counts *requests* and does not care that the answer was empty. A
+    first sync used to be one request per announcement across a fortnight of
+    every course, fired as fast as httpx would go, and it spent the day's quota
+    before it reached the last course.
+
+    So: `ai.might_state_a_deadline` drops the posts that cannot be hiding a
+    date before any of them cost anything, and what survives goes to the model
+    in one request per course instead of one per post. Neither changes what a
+    proposal is or how it is reviewed — only how many times we ask.
     """
     rows = await db.select("announcements_seen", user_id=db.eq(user_id))
     seen = {r["announcement_id"] for r in rows}
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=AI_HORIZON_DAYS)
+
+    # Two passes, because the model is now asked once for the whole course
+    # rather than once per post. The first pass decides what is even a
+    # question; the second asks it.
+    candidates: list[ai.Announcement] = []
+    by_id: dict[str, dict] = {}
 
     for post in posts:
         ann_id = post.get("id")
@@ -464,24 +481,45 @@ async def _read_announcements(
             await _mark_seen(user_id, course_id, ann_id)
             continue
 
-        try:
-            found = await ai.propose_deadlines(
-                course_name=klass["name"],
-                posted_on=posted.date(),
-                text=text,
-            )
-        except ai.AiUnavailable:
-            # The flag went off mid-run. Not this announcement's problem, and
-            # not something to record as read.
-            return
-        except ai.AiError as exc:
-            # One announcement's failure, counted and dropped. The sync's job
-            # is deadlines from coursework; this is the part that can be
-            # missing without the run being wrong.
-            report.warnings.append(f"{klass['name']} announcement: {exc}")
+        # Read without being sent: no date, or no language of owing work. Also
+        # a permanent fact about this announcement, and the cheapest one we
+        # have — a room change and a thank-you no longer cost a request each.
+        if not ai.might_state_a_deadline(text):
+            await _mark_seen(user_id, course_id, ann_id)
             continue
 
+        by_id[ann_id] = post
+        candidates.append(
+            ai.Announcement(id=ann_id, posted_on=posted.date(), text=text)
+        )
+
+    if not candidates:
+        return
+
+    try:
+        found = await ai.propose_deadlines(
+            course_name=klass["name"], announcements=candidates
+        )
+    except ai.AiUnavailable:
+        # The flag went off mid-run. Not these announcements' problem, and not
+        # something to record as read.
+        return
+    except ai.AiError as exc:
+        # The batch failed whole, and nothing in it is marked — the next hourly
+        # pass re-reads all of it for free. That is the same retry the
+        # one-at-a-time version had, at a coarser grain: this loses an hour for
+        # a course, where the old one lost an hour for a post.
+        report.warnings.append(f"{klass['name']} announcements: {exc}")
+        return
+
+    for candidate in candidates:
+        post = by_id[candidate.id]
         report.announcements_read += 1
+
+        # Sparse by design: an announcement the model found nothing in is
+        # absent from `found`, not present-and-empty. Both mean the same thing
+        # and both get marked seen below.
+        deadlines = found.get(candidate.id, [])
 
         # One row per deadline, not per announcement.
         #
@@ -496,7 +534,7 @@ async def _read_announcements(
         # gives every deadline in a post its own identity without a migration.
         # It is stable because the model is asked for a stable order and the
         # announcement is only ever read once anyway.
-        for index, deadline in enumerate(found):
+        for index, deadline in enumerate(deadlines):
             try:
                 await db.insert(
                     "proposals",
@@ -505,7 +543,7 @@ async def _read_announcements(
                         "class_id": klass["id"],
                         "kind": "deadline",
                         "source_kind": "announcement",
-                        "source_id": f"{ann_id}#{index}",
+                        "source_id": f"{candidate.id}#{index}",
                         "payload": {
                             "title": deadline.title,
                             "due_date": deadline.due_at,
@@ -524,7 +562,7 @@ async def _read_announcements(
                 # rejected proposal is kept precisely so this insert fails.
                 pass
 
-        await _mark_seen(user_id, course_id, ann_id)
+        await _mark_seen(user_id, course_id, candidate.id)
 
 
 async def _mark_seen(user_id: str, course_id: str, announcement_id: str) -> None:
