@@ -2106,9 +2106,19 @@ button.link.danger:hover:not(:disabled) {
   min-width: 0;
 }
 
-/* The card drags from anywhere, so the whole card says so. The clock and the
-   buttons stop the gesture themselves — see BlockCard — rather than the card
-   restricting it to one line of text nobody could be expected to find. */
+/*
+ * The card drags from anywhere, so the whole card says so.
+ *
+ * `user-select: none` is the half of that which was missing: pressing the
+ * empty space under a title and pulling started the drag *and* a text
+ * selection, so the visible result was the title turning blue rather than the
+ * card moving. Nothing on a block is text anybody selects to copy.
+ */
+.list > li.card.block {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .list > li.card.block:active {
   cursor: grabbing;
 }
@@ -2179,14 +2189,40 @@ button.link.danger:hover:not(:disabled) {
   font-weight: 500;
   line-height: 1.3;
   min-width: 0;
+  /* `anywhere` alone. `hyphens: auto` was breaking words that fit perfectly
+     well — "Frequency of ele-ment in a sorted array" — which is a worse way to
+     not fit than the overflow it was added to solve. This breaks a run only
+     when the run genuinely cannot sit on a line of its own. */
   overflow-wrap: anywhere;
-  word-break: break-word;
-  hyphens: auto;
 }
 
 .block-actions {
   gap: 0.4rem;
   font-size: 0.78rem;
+  min-width: 0;
+}
+
+/*
+ * The class name, which is the thing that was actually hanging out of the
+ * card.
+ *
+ * `.card .link` pins every link to `flex: none` — right on a board card, where
+ * a course chip sits beside a wide title and must not be squeezed. In a
+ * nine-rem week column it meant "CS-2212 (Monsoon 2026)" claimed its
+ * max-content width and simply ran off the edge. Here it shrinks and wraps
+ * instead, and Remove holds the right regardless.
+ */
+.block-actions > .link {
+  flex: 0 1 auto;
+  min-width: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+
+.block-actions > .link.danger {
+  flex: none;
 }
 
 .block-retime {

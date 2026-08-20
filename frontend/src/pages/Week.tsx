@@ -16,7 +16,7 @@ import {
 } from "@dnd-kit/core";
 import * as db from "../lib/db";
 import { getCalendar } from "../lib/api";
-import { toast } from "../lib/toast";
+import { errorText, toast } from "../lib/toast";
 import { formatDue } from "../lib/board";
 import {
   MAX_SESSION_MINUTES,
@@ -113,20 +113,35 @@ export default function WeekPage({
   useEffect(() => {
     let live = true;
     void (async () => {
+      let events;
       try {
         const res = await getCalendar(DAYS);
         if (!live) return;
         setCalendarGranted(res.granted);
         if (!res.granted) return;
+        events = res.events;
+      } catch {
+        // Google, or the backend in front of it, did not answer. Nothing to
+        // report: the planner works without it and the Classes tab owns the
+        // reconnect prompt.
+        if (live) setCalendarGranted(false);
+        return;
+      }
+
+      try {
         const changed = await db.syncCalendar(
           userId,
-          res.events,
+          events,
           planFrom,
           addDays(planFrom, DAYS),
         );
         if (changed && live) await refresh();
-      } catch {
-        if (live) setCalendarGranted(false);
+      } catch (e) {
+        // The fetch worked and writing it down did not, which is this app's
+        // fault rather than Google's — a schema behind the code, most likely.
+        // Swallowing it here is how a week silently renders with no lectures
+        // in it and no way to find out why.
+        if (live) toast(errorText(e, "Could not store your calendar"), "error");
       }
     })();
     return () => {
@@ -200,7 +215,7 @@ export default function WeekPage({
         toast("Week planned", "success");
       }
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Could not plan the week", "error");
+      toast(errorText(e, "Could not plan the week"), "error");
     } finally {
       setGenerating(false);
     }
@@ -231,7 +246,7 @@ export default function WeekPage({
       await refresh();
       toast("Calendar back in step with Google", "success");
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Could not reach your calendar", "error");
+      toast(errorText(e, "Could not reach your calendar"), "error");
     } finally {
       setResyncing(false);
     }
@@ -269,7 +284,7 @@ export default function WeekPage({
       await db.moveBlock(block.id, starts_at, ends_at);
     } catch (e) {
       setPlanBlocks(previous);
-      toast(e instanceof Error ? e.message : "Could not move that block", "error");
+      toast(errorText(e, "Could not move that block"), "error");
     }
   }
 
@@ -305,7 +320,7 @@ export default function WeekPage({
       else await db.deleteBlock(block.id);
     } catch (e) {
       setPlanBlocks(previous);
-      toast(e instanceof Error ? e.message : "Could not remove that block", "error");
+      toast(errorText(e, "Could not remove that block"), "error");
     }
   }
 
@@ -442,7 +457,7 @@ export default function WeekPage({
           );
         } catch (err) {
           setPlanBlocks(previous);
-          toast(err instanceof Error ? err.message : "Could not place that", "error");
+          toast(errorText(err, "Could not place that"), "error");
         }
         return;
       }
@@ -454,7 +469,7 @@ export default function WeekPage({
       await commitMove(subject.block, start, subject.minutes);
       if (restoring) await db.setDismissed(subject.block.id, false);
     } catch (err) {
-      toast(err instanceof Error ? err.message : "Could not place that", "error");
+      toast(errorText(err, "Could not place that"), "error");
     }
   }
 

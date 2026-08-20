@@ -15,6 +15,25 @@
  * it is a similar-looking copy.
  */
 
+/**
+ * Whatever a thrown thing has to say for itself.
+ *
+ * Every failure path in this app used to read `e instanceof Error ? e.message
+ * : "something generic"`, which is exactly wrong for the errors it catches
+ * most: Supabase rejects with a plain object carrying `message`, not an Error,
+ * so the check failed every time and the real cause — a missing column, a
+ * violated constraint — was replaced by a sentence that could not help
+ * anybody. A message is worth showing whoever wrote it.
+ */
+export function errorText(e: unknown, fallback = "Something went wrong"): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object" && "message" in e) {
+    const m = String((e as { message: unknown }).message);
+    if (m) return m;
+  }
+  return fallback;
+}
+
 export type ToastKind = "info" | "error" | "success";
 
 export type Toast = {
