@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as db from "../lib/db";
-import type { Class, PlanBlock, Routine, Task, TaskStatus } from "../lib/types";
+import type {
+  Class,
+  PlanBlock,
+  Routine,
+  RoutineOverride,
+  Task,
+  TaskStatus,
+} from "../lib/types";
 
 function message(e: unknown): string {
   if (e && typeof e === "object" && "message" in e) return String(e.message);
@@ -19,6 +26,7 @@ export function useData(userId: string) {
   const [classes, setClasses] = useState<Class[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [routines, setRoutines] = useState<Routine[]>([]);
+  const [routineOverrides, setRoutineOverrides] = useState<RoutineOverride[]>([]);
   const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,24 +52,26 @@ export function useData(userId: string) {
       // just aged out. Doing it the other way round shows a card for one
       // render and then vanishes it.
       await db.archiveCompleted();
-      // Four small queries in parallel. Routines are a handful of rows and
-      // plan blocks are bounded by the horizon, so they join the one shared
-      // load rather than becoming a second cache that can go stale on its own
-      // — refresh() stays the only invalidation in the app.
+      // Five small queries in parallel. Routines and their weekday exceptions
+      // are a handful of rows and plan blocks are bounded by the horizon, so
+      // they join the one shared load rather than becoming a second cache that
+      // can go stale on its own — refresh() stays the only invalidation.
       //
       // The plan blocks now include mirrored calendar events, which is the
       // point: the week grid draws lectures from this load, at the speed of
       // every other row, instead of waiting on Google after it has painted.
-      const [c, t, r, p] = await Promise.all([
+      const [c, t, r, p, o] = await Promise.all([
         db.listClasses(true),
         db.listTasks(),
         db.listRoutines(),
         db.listPlanBlocks(planFrom),
+        db.listRoutineOverrides(),
       ]);
       setClasses(c);
       setTasks(t);
       setRoutines(r);
       setPlanBlocks(p);
+      setRoutineOverrides(o);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -111,6 +121,7 @@ export function useData(userId: string) {
     classes,
     tasks,
     routines,
+    routineOverrides,
     planBlocks,
     planFrom,
     loading,
@@ -121,6 +132,7 @@ export function useData(userId: string) {
     setClasses,
     setTasks,
     setRoutines,
+    setRoutineOverrides,
     setPlanBlocks,
     userId,
   };

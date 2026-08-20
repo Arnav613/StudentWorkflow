@@ -21,9 +21,11 @@ import type {
   HealthTask,
   PlanBlock,
   Routine,
+  RoutineOverride,
   Task,
   TaskStatus,
 } from "./types";
+import { dayKey, overrideIndex, routineBlocks } from "./schedule";
 import type { PlannedBlock } from "./schedule";
 
 function unwrap<T>({ data, error }: { data: T | null; error: unknown }): T {
@@ -740,4 +742,96 @@ export async function resyncCalendar(
     })),
   );
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Routine overrides, and putting routines straight onto the grid
+// ---------------------------------------------------------------------------
+
+export async function listRoutineOverrides(): Promise<RoutineOverride[]> {
+  return unwrap(await supabase.from("routine_overrides").select("*"));
+}
+
+/** One weekday of one routine, at its own time. Upserted: one rule per day. */
+export async function setRoutineOverride(input: {
+  user_id: string;
+  routine_id: string;
+  weekday: number;
+  time_of_day: string;
+}): Promise<RoutineOverride> {
+  return unwrap(
+    await supabase
+      .from("routine_overrides")
+      .upsert(input, { onConflict: "routine_id,weekday" })
+      .select()
+      .single(),
+  );
+}
+
+/**
+ * Every exception, gone.
+ *
+ * Used when a time is set for the whole routine: a rule restated for all seven
+ * days has nothing left to make an exception to, and leaving Tuesday's old
+ * override standing would mean the one day that visibly refused the change.
+ */
+export async function clearRoutineOverrides(routineId: string): Promise<void> {
+  const { error } = await supabase
+    .from("routine_overrides")
+    .delete()
+    .eq("routine_id", routineId);
+  if (error) throw error;
+}
+
+/**
+ * Write a routine's occurrences onto the grid, now, without a Replan.
+ *
+ * A routine used to be a row you entered and then a button you pressed before
+ * anything happened — which made it a setting rather than a thing you did, and
+ * left the panel and the grid disagreeing about your week until you noticed.
+ * Adding a routine, or moving one, now shows up where you are looking.
+ *
+ * Locked occurrences are preserved and planned around, not rewritten: a
+ * Tuesday you dragged to six is the "just this once" answer, and regenerating
+ * over the top of it would silently undo it.
+ */
+export async function resyncRoutine(
+  userId: string,
+  routine: Routine,
+  overrides: RoutineOverride[],
+  from: Date,
+  days: number,
+): Promise<PlanBlock[]> {
+  const existing: PlanBlock[] = unwrap(
+    await supabase
+      .from("plan_blocks")
+      .select("*")
+      .eq("routine_id", routine.id)
+      .gte("ends_at", from.toISOString()),
+  );
+
+  const doomed = existing.filter((b) => !b.locked).map((b) => b.id);
+  if (doomed.length) {
+    const { error } = await supabase.from("plan_blocks").delete().in("id", doomed);
+    if (error) throw error;
+  }
+
+  const pinned = new Set(
+    existing.filter((b) => b.locked).map((b) => dayKey(b.starts_at)),
+  );
+  const fresh = routineBlocks({
+    routine,
+    overrides: overrideIndex(overrides.filter((o) => o.routine_id === routine.id)),
+    from,
+    days,
+    pinned,
+  });
+  if (!fresh.length) return [];
+
+  return unwrap(
+    await supabase
+      .from("plan_blocks")
+      .insert(fresh.map((b) => ({ ...b, user_id: userId })))
+      .select(),
+  );
 }

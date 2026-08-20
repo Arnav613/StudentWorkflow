@@ -16,10 +16,11 @@ import {
 } from "@dnd-kit/core";
 import * as db from "../lib/db";
 import { getCalendar } from "../lib/api";
-import { errorText, toast } from "../lib/toast";
+import { errorText, toast, undoable } from "../lib/toast";
 import { formatDue } from "../lib/board";
 import {
   MAX_SESSION_MINUTES,
+  PLAN_DAYS,
   blockMinutes,
   byDay,
   classMedians,
@@ -37,7 +38,7 @@ import TimePicker from "../components/TimePicker";
 import type { DataStore } from "../hooks/useData";
 import type { Class, PlanBlock, Routine, Task } from "../lib/types";
 
-const DAYS = 7;
+const DAYS = PLAN_DAYS;
 
 /**
  * The Week: seven days, and what you have actually decided to do in them.
@@ -69,6 +70,7 @@ export default function WeekPage({
     classes,
     tasks,
     routines,
+    routineOverrides,
     planBlocks,
     planFrom,
     refresh,
@@ -197,6 +199,7 @@ export default function WeekPage({
         routines,
         busy,
         locked: onBoard.filter((b) => b.locked && !b.google_event_id),
+        routineOverrides,
         from: new Date(),
         days: DAYS,
         medians,
@@ -295,10 +298,36 @@ export default function WeekPage({
     if (!hhmm) return;
     const start = new Date(block.starts_at);
     const [h, m] = hhmm.split(":").map(Number);
-    await commitMove(
-      block,
-      new Date(start.getFullYear(), start.getMonth(), start.getDate(), h, m),
+    const next = new Date(
+      start.getFullYear(),
+      start.getMonth(),
+      start.getDate(),
+      h,
+      m,
     );
+    await commitMove(block, next);
+    askScope(block, next);
+  }
+
+  /**
+   * Offer to widen a routine move, but only when the day did not change.
+   *
+   * Dragging Tuesday's gym into Wednesday is not a statement about Wednesdays
+   * — it is this week, this once, and asking "every Wednesday?" would invite
+   * an answer that quietly leaves Tuesday empty. A change of time on the day
+   * it already belonged to is the only one where the wider readings make
+   * sense, and it is the one people actually make.
+   */
+  function askScope(block: PlanBlock, start: Date) {
+    const routine = block.routine_id ? routineById.get(block.routine_id) : null;
+    if (!routine) return;
+    if (new Date(block.starts_at).getDay() !== start.getDay()) return;
+    setAsking({
+      blockId: block.id,
+      routine,
+      weekday: start.getDay(),
+      time_of_day: `${`${start.getHours()}`.padStart(2, "0")}:${`${start.getMinutes()}`.padStart(2, "0")}`,
+    });
   }
 
   /**
@@ -311,6 +340,30 @@ export default function WeekPage({
    * longer accounted for.
    */
   async function clear(block: PlanBlock) {
+    /*
+     * Removing a routine block removes the routine.
+     *
+     * There is nowhere else to do it any more — the list under the grid went
+     * away because it was the same fact told twice — and "delete this one
+     * Tuesday of a thing that repeats" is a wish nobody has had. Undoable for
+     * five seconds like every other destructive act in this app, which is what
+     * makes it safe to put on a card.
+     */
+    if (block.routine_id) {
+      const routine = routineById.get(block.routine_id);
+      const previousBlocks = planBlocks;
+      const routineId = block.routine_id;
+      undoable({
+        message: `Removed ${routine?.title ?? "that routine"}`,
+        apply: () =>
+          setPlanBlocks((prev) => prev.filter((b) => b.routine_id !== routineId)),
+        commit: () => db.deleteRoutine(routineId),
+        revert: () => setPlanBlocks(previousBlocks),
+        onError: () => toast("The routine is still there", "info"),
+      });
+      return;
+    }
+
     const previous = planBlocks;
     setPlanBlocks((prev) =>
       block.google_event_id
@@ -323,6 +376,86 @@ export default function WeekPage({
     } catch (e) {
       setPlanBlocks(previous);
       toast(errorText(e, "Could not remove that block"), "error");
+    }
+  }
+
+  /* --- "…and every Tuesday?" ---------------------------------------------- */
+
+  /**
+   * A routine block that was just moved, and has not yet been asked how far
+   * the move goes.
+   *
+   * The move has already happened by the time this is set — as "just this
+   * once", the narrowest reading, which is the only one that is safe to assume
+   * and the only one that needs no second step. The question is an offer to
+   * widen it, so ignoring it is a valid answer and there is no dialog standing
+   * between you and the rest of the page.
+   */
+  const [asking, setAsking] = useState<{
+    blockId: string;
+    routine: Routine;
+    weekday: number;
+    time_of_day: string;
+  } | null>(null);
+
+  /**
+   * Widen the change from this one occurrence to a weekday, or to the lot.
+   *
+   * Both wide answers unlock the block first. It was locked by the drag, which
+   * is the app's way of saying "a person put this here, leave it alone" — but
+   * once the rule itself says six o'clock on Tuesdays, this block is no longer
+   * an exception to anything, and leaving it pinned would freeze one Tuesday
+   * against every later edit of the routine it now agrees with.
+   */
+  async function applyScope(scope: "weekday" | "routine") {
+    const ask = asking;
+    setAsking(null);
+    if (!ask) return;
+    try {
+      let routine = ask.routine;
+      let overrides = routineOverrides;
+
+      if (scope === "routine") {
+        routine = await db.updateRoutine(routine.id, {
+          time_of_day: ask.time_of_day,
+        });
+        // A time restated for every day has nothing left to make an exception
+        // to, and a surviving Tuesday rule would be the one day that visibly
+        // refused the change.
+        await db.clearRoutineOverrides(routine.id);
+        overrides = overrides.filter((o) => o.routine_id !== routine.id);
+      } else {
+        const saved = await db.setRoutineOverride({
+          user_id: userId,
+          routine_id: routine.id,
+          weekday: ask.weekday,
+          time_of_day: ask.time_of_day,
+        });
+        overrides = [
+          ...overrides.filter(
+            (o) => !(o.routine_id === routine.id && o.weekday === ask.weekday),
+          ),
+          saved,
+        ];
+      }
+
+      // Unlocked first, then rewritten. The lock was the drag saying "a person
+      // put this here"; now that the rule itself says six o'clock, this block
+      // is an exception to nothing, and leaving it pinned would freeze one
+      // Tuesday against every later edit of the routine it agrees with.
+      await db.unlockBlock(ask.blockId);
+      // And the rest of the week has to follow, or the answer would apply to
+      // the one day you were looking at and silently to nothing else.
+      await db.resyncRoutine(userId, routine, overrides, new Date(), DAYS);
+      await refresh();
+      toast(
+        scope === "routine"
+          ? `${ask.routine.title} moved to ${clockOf(hhmmToDate(ask.time_of_day))}`
+          : `${ask.routine.title} moved on ${WEEKDAYS[ask.weekday]}s`,
+        "success",
+      );
+    } catch (e) {
+      toast(errorText(e, "Could not change that routine"), "error");
     }
   }
 
@@ -470,6 +603,7 @@ export default function WeekPage({
       const restoring = subject.block.dismissed;
       await commitMove(subject.block, start, subject.minutes);
       if (restoring) await db.setDismissed(subject.block.id, false);
+      askScope(subject.block, start);
     } catch (err) {
       toast(errorText(err, "Could not place that"), "error");
     }
@@ -557,6 +691,9 @@ export default function WeekPage({
                           : null
                       }
                       cls={classById}
+                      asking={asking?.blockId === block.id ? asking : null}
+                      onScope={(scope) => void applyScope(scope)}
+                      onKeepOnce={() => setAsking(null)}
                       onRetime={(t) => void retime(block, t)}
                       onClear={() => void clear(block)}
                       onOpenClass={onOpenClass}
@@ -706,6 +843,9 @@ function BlockCard({
   task,
   routine,
   cls,
+  asking,
+  onScope,
+  onKeepOnce,
   onRetime,
   onClear,
   onOpenClass,
@@ -716,14 +856,15 @@ function BlockCard({
   task: Task | null;
   routine: Routine | null;
   cls: Map<string, Class>;
+  asking: { routine: Routine; weekday: number } | null;
+  onScope: (scope: "weekday" | "routine") => void;
+  onKeepOnce: () => void;
   onRetime: (hhmm: string) => void;
   onClear: () => void;
   onOpenClass: (id: string) => void;
 }) {
-  const fixed = Boolean(routine);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `block:${block.id}`,
-    disabled: fixed,
   });
   const { setNodeRef: setDropRef, isOver } = useDroppable({ id: slot });
 
@@ -741,8 +882,8 @@ function BlockCard({
           setNodeRef(node);
           setDropRef(node);
         }}
-        {...(fixed ? {} : listeners)}
-        {...(fixed ? {} : attributes)}
+        {...listeners}
+        {...attributes}
         className={`card block ${hue}${isDragging ? " dragging" : ""}${
           routine ? " routine" : ""
         }${event ? " event" : ""}${block.locked ? " locked" : ""}${
@@ -770,45 +911,70 @@ function BlockCard({
             same number the card was already displaying — two things saying one
             thing, and the editable one was the one that did not look editable.
           */}
-          {fixed ? (
-            <span className="muted small grow">
-              {clockOf(block.starts_at)} – {clockOf(block.ends_at)}
-            </span>
-          ) : (
-            <TimePicker
-              value={hhmmOf(start.getHours() * 60 + start.getMinutes())}
-              compact
-              display={`${clockOf(block.starts_at)} – ${clockOf(block.ends_at)}`}
-              onChange={onRetime}
-            />
-          )}
+          <TimePicker
+            value={hhmmOf(start.getHours() * 60 + start.getMinutes())}
+            compact
+            display={`${clockOf(block.starts_at)} – ${clockOf(block.ends_at)}`}
+            onChange={onRetime}
+          />
         </div>
 
         <span className="block-title">{title}</span>
 
-        {routine ? (
-          <span className="muted small">Routine</span>
-        ) : (
-          <div
-            className="row block-actions"
-            onPointerDown={(e) => e.stopPropagation()}
+        <div
+          className="row block-actions"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {event ? (
+            <span className="muted small">Calendar</span>
+          ) : routine ? (
+            <span className="muted small">Repeats</span>
+          ) : klass ? (
+            <button className="link" onClick={() => onOpenClass(klass.id)}>
+              {klass.name}
+            </button>
+          ) : null}
+          <span className="grow" />
+          <button
+            className="link danger"
+            onClick={onClear}
+            title={
+              event
+                ? "Not attending. Never written back to Google."
+                : routine
+                  ? "Removes it from every day it repeats on"
+                  : undefined
+            }
           >
-            {event ? (
-              <span className="muted small">Calendar</span>
-            ) : klass ? (
-              <button className="link" onClick={() => onOpenClass(klass.id)}>
-                {klass.name}
+            Remove
+          </button>
+        </div>
+
+        {/*
+          Asked after the fact, and answerable by ignoring it.
+
+          The move has already happened as "just this once" — the narrowest
+          reading, and the only one safe to assume. This is an offer to widen
+          it, which is why it is a strip on the card rather than a dialog
+          across the screen: a question that blocks the page is a question you
+          answer wrongly to get rid of it.
+        */}
+        {asking && (
+          <div className="scope-ask" onPointerDown={(e) => e.stopPropagation()}>
+            <span className="muted small">Also…</span>
+            <button className="link" onClick={() => onScope("weekday")}>
+              every {WEEKDAYS[asking.weekday]}
+            </button>
+            {/* A routine that only ever runs on one weekday has one honest
+                answer for both, so it is not offered twice. */}
+            {asking.routine.weekday === null && (
+              <button className="link" onClick={() => onScope("routine")}>
+                every day
               </button>
-            ) : null}
+            )}
             <span className="grow" />
-            <button
-              className="link danger"
-              onClick={onClear}
-              title={
-                event ? "Not attending. Never written back to Google." : undefined
-              }
-            >
-              Remove
+            <button className="link" onClick={onKeepOnce}>
+              Just today
             </button>
           </div>
         )}
@@ -937,6 +1103,22 @@ function RailItem({
       {children}
     </li>
   );
+}
+
+const WEEKDAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+/** "18:00" as a Date on an arbitrary day, purely so clockOf can format it. */
+function hhmmToDate(hhmm: string): Date {
+  const [h, m] = hhmm.split(":").map(Number);
+  return new Date(2000, 0, 1, h, m);
 }
 
 function isSameDay(a: Date, b: Date): boolean {

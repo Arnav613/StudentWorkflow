@@ -2245,16 +2245,19 @@ button.link.danger:hover:not(:disabled) {
 }
 
 /* Routines and calendar events are not work and do not read as work: no
-   shadow, no grab cursor, a flat sunken surface that says "this hour is gone"
-   rather than "do this". Both are time you cannot spend twice; neither is
-   something to tick off. */
+   shadow, a flat sunken surface that says "this hour is gone" rather than "do
+   this". Both are time you cannot spend twice; neither is something to tick
+   off.
+
+   They keep the grab cursor, though. Both are movable now — a lecture you are
+   skipping, a gym session at six instead of five — and `cursor: default` was
+   the card claiming otherwise. */
 .list > li.card.block.routine,
 .list > li.card.block.event {
   background: var(--sunken);
   border-style: dashed;
   border-left-style: dashed;
   box-shadow: none;
-  cursor: default;
   color: var(--muted);
 }
 
@@ -2286,12 +2289,6 @@ button.link.danger:hover:not(:disabled) {
 
 /* ---- Routines ----------------------------------------------------------- */
 
-.routine-presets {
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 0.75rem;
-}
-
 .routine-form {
   display: flex;
   flex-wrap: wrap;
@@ -2314,120 +2311,6 @@ button.link.danger:hover:not(:disabled) {
 
 .routine-length input {
   width: 5rem;
-}
-
-.list.routine-list > li {
-  gap: 0.5rem;
-  padding: 0.4rem 0.15rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.list.routine-list > li:last-child {
-  border-bottom: 0;
-}
-
-/* Dimmed, not hidden. A paused routine that vanished would be
-   indistinguishable from a deleted one, and the only place to resume it is
-   this list. */
-.list.routine-list > li.paused {
-  opacity: 0.5;
-  text-decoration: line-through;
-}
-
-/* ---- Dropping ----------------------------------------------------------- */
-
-/*
- * The gaps between cards, which are where a block is now actually aimed.
- *
- * A hairline at rest and a real target mid-drag. Dropping used to mean "this
- * column", and the app then kept the block's old clock — so an 8am session
- * dragged to the foot of Thursday snapped back to the top of it. These say
- * *between these two*, and the time follows from that.
- *
- * They cannot be a permanent gutter: seven columns with a visible lane between
- * every pair of cards would spend more height on lanes than on work.
- */
-.drop-slot {
-  list-style: none;
-  height: 0.25rem;
-  margin: -0.1rem 0;
-  border-radius: var(--r-pill);
-  transition: height 90ms ease, background-color 90ms ease;
-}
-
-.drop-slot.over {
-  height: 1.6rem;
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
-}
-
-/* The rest of the column below the last card: "after everything else today". */
-.slot-tail {
-  height: 1.4rem;
-  margin-bottom: -0.6rem;
-}
-
-/* An empty day is one big target, and says the word it always said. */
-.slot-empty {
-  height: auto;
-  min-height: 3rem;
-  display: flex;
-  align-items: center;
-  padding: 0.4rem 0.15rem;
-  margin: 0;
-}
-
-.slot-empty.over {
-  height: auto;
-}
-
-/* A card is a target too, meaning "take this one's place, push it down". The
-   thin gaps alone would be a game of darts in a nine-rem column. */
-.list > li.card.block.slot-over {
-  border-color: var(--accent);
-  box-shadow: inset 0 2px 0 -1px var(--accent);
-}
-
-/* An hour that has gone by. Dimmed rather than hidden: the column would
-   otherwise start mid-afternoon and today would look like it never happened.
-   If the work in it is not done, the task is already back in the rail. */
-.list > li.card.block.past {
-  opacity: 0.55;
-}
-
-/* ---- The unplanned rail, as a place to drop things ---------------------- */
-
-.unplanned-rail {
-  transition: border-color 120ms ease, background-color 120ms ease;
-}
-
-.unplanned-rail.over {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
-}
-
-/*
- * Rail items drag now, which is the whole point of the rail: it used to be a
- * read-only list of complaints, and the only way to act on one was the Plan
- * button — a control that rewrote the entire week to move a single reading.
- */
-.rail-item {
-  cursor: grab;
-  border-radius: var(--r-sm, 5px);
-  padding-left: 0.35rem;
-  padding-right: 0.35rem;
-}
-
-.rail-item:active {
-  cursor: grabbing;
-}
-
-.rail-item:hover {
-  background: color-mix(in srgb, var(--fg) 4%, transparent);
-}
-
-.rail-item.dragging {
-  opacity: 0.4;
 }
 
 /*

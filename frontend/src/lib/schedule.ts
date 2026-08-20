@@ -15,7 +15,17 @@
  * Hence `unplaced`: what does not fit comes back and gets shown.
  */
 
-import type { PlanBlock, Routine, Task } from "./types";
+import type { PlanBlock, Routine, RoutineOverride, Task } from "./types";
+
+/**
+ * How far ahead the week looks, everywhere.
+ *
+ * Shared because three things have to agree on it: the grid's columns, the
+ * horizon the calendar is fetched over, and how many days of a new routine get
+ * written down. When they disagree the symptom is a routine that exists on
+ * five of the seven columns you can see.
+ */
+export const PLAN_DAYS = 7;
 
 /** Waking hours the planner is allowed to fill. Outside these it plans nothing. */
 export const DAY_START_HOUR = 8;
@@ -111,6 +121,8 @@ export type PlanInput = {
   busy: BusyInterval[];
   /** Blocks a person placed by hand. Immovable, and planned around. */
   locked: PlanBlock[];
+  /** Weekday exceptions to routine times. See migration 0008. */
+  routineOverrides?: RoutineOverride[];
   /** The instant the plan starts. Nothing is ever scheduled before it. */
   from: Date;
   days?: number;
@@ -232,6 +244,86 @@ function carve(window: Interval, occupied: Interval[]): Interval[] {
   return out;
 }
 
+/* ---------------------------------------------------------------------------
+   Routines
+   ------------------------------------------------------------------------ */
+
+/** The weekday exceptions, keyed the way both callers want to ask. */
+export function overrideIndex(
+  overrides: RoutineOverride[],
+): Map<string, RoutineOverride> {
+  return new Map(overrides.map((o) => [`${o.routine_id}:${o.weekday}`, o]));
+}
+
+/**
+ * When a routine happens on a given day, or null if it does not.
+ *
+ * One place, because there are now two callers that must agree exactly: the
+ * planner generating a whole week, and the direct write that puts a new
+ * routine straight onto the grid without waiting for Replan. Two
+ * implementations of "when is gym on Tuesday" would drift, and the symptom
+ * would be a block that moves the first time you press the button.
+ */
+export function routineTimeOn(
+  routine: Routine,
+  day: Date,
+  overrides: Map<string, RoutineOverride>,
+): { start: number; end: number } | null {
+  if (!routine.active) return null;
+  if (routine.weekday !== null && routine.weekday !== day.getDay()) return null;
+  const override = overrides.get(`${routine.id}:${day.getDay()}`);
+  const start = at(day, minutesOfDay(override?.time_of_day ?? routine.time_of_day));
+  return { start, end: start + routine.duration_minutes * MINUTE };
+}
+
+/**
+ * Every occurrence of one routine across a horizon, shaped for insert.
+ *
+ * `pinned` holds the dates this routine has already been placed by hand — a
+ * block someone dragged. Those are left exactly alone: regenerating over the
+ * top of a Tuesday you deliberately moved is the whole failure that locking
+ * exists to prevent, and it would silently undo the "just this once" answer
+ * the moment anything else changed.
+ */
+export function routineBlocks({
+  routine,
+  overrides,
+  from,
+  days,
+  pinned = new Set<string>(),
+}: {
+  routine: Routine;
+  overrides: Map<string, RoutineOverride>;
+  from: Date;
+  days: number;
+  pinned?: Set<string>;
+}): PlannedBlock[] {
+  const out: PlannedBlock[] = [];
+  const floor = from.getTime();
+
+  for (const day of planDays(from, days)) {
+    if (pinned.has(dayKey(day))) continue;
+    const when = routineTimeOn(routine, day, overrides);
+    // An hour that has already gone is not a commitment you can still keep, so
+    // it neither renders nor blocks time.
+    if (!when || when.end <= floor) continue;
+    out.push({
+      task_id: null,
+      routine_id: routine.id,
+      starts_at: new Date(when.start).toISOString(),
+      ends_at: new Date(when.end).toISOString(),
+      locked: false,
+    });
+  }
+  return out;
+}
+
+/** A local calendar date as a string, for set membership. Never an instant. */
+export function dayKey(d: Date | string): string {
+  const date = typeof d === "string" ? new Date(d) : d;
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
 /**
  * Where a block dropped between two neighbours should actually start.
  *
@@ -306,6 +398,7 @@ export function planWeek({
   routines,
   busy,
   locked,
+  routineOverrides = [],
   from,
   days = 7,
   medians,
@@ -317,22 +410,36 @@ export function planWeek({
   const blocks: PlannedBlock[] = [];
   const occupied: Interval[] = [];
 
-  // 1a. Routines. A weekday of null is daily; anything already past is not a
-  // commitment you can still keep, so it neither renders nor blocks time.
-  for (const day of horizon) {
-    for (const r of routines) {
-      if (!r.active) continue;
-      if (r.weekday !== null && r.weekday !== day.getDay()) continue;
-      const start = at(day, minutesOfDay(r.time_of_day));
-      const end = start + r.duration_minutes * MINUTE;
+  /*
+   * 1a. Routines, through the same generator the direct writes use.
+   *
+   * `pinned` is the "just this once" answer: a routine block someone dragged
+   * is locked, is re-emitted by step 1b below exactly where they left it, and
+   * must not also be generated here — that would put gym on Tuesday twice, at
+   * five and at six, which is precisely the confusion moving it was meant to
+   * resolve.
+   */
+  const overrides = overrideIndex(routineOverrides);
+  const pinned = new Map<string, Set<string>>();
+  for (const b of locked) {
+    if (!b.routine_id) continue;
+    const days = pinned.get(b.routine_id) ?? new Set<string>();
+    days.add(dayKey(b.starts_at));
+    pinned.set(b.routine_id, days);
+  }
+
+  for (const r of routines) {
+    for (const block of routineBlocks({
+      routine: r,
+      overrides,
+      from: horizon[0],
+      days,
+      pinned: pinned.get(r.id),
+    })) {
+      const start = Date.parse(block.starts_at);
+      const end = Date.parse(block.ends_at);
       if (end <= floor) continue;
-      blocks.push({
-        task_id: null,
-        routine_id: r.id,
-        starts_at: new Date(start).toISOString(),
-        ends_at: new Date(end).toISOString(),
-        locked: false,
-      });
+      blocks.push(block);
       occupied.push({ start, end });
     }
   }

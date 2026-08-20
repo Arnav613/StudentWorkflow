@@ -141,6 +141,28 @@ export type Routine = {
 };
 
 /**
+ * One weekday of one routine, at a different time from the rest of it.
+ *
+ * "Gym at five, except Tuesdays, which are six." Without this there were two
+ * answers and both were wrong: move the routine and every day moves with it,
+ * or leave it and the plan is wrong every Tuesday until you fix it by hand.
+ *
+ * Only the weekday scope needs a row. A single occurrence is expressed by
+ * locking its block, which is what locked already means everywhere else in
+ * this app, and the whole routine is expressed by the routine itself. See
+ * migration 0008.
+ */
+export type RoutineOverride = {
+  id: string;
+  user_id: string;
+  routine_id: string;
+  weekday: number;
+  time_of_day: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
  * One hour of the week, spoken for. Exactly one of `task_id`, `routine_id` and
  * `google_event_id` is set — work, a standing commitment, or a lecture.
  *
