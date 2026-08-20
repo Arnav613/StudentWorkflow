@@ -131,14 +131,23 @@ export const isReconnectError = (e: unknown) =>
 // Calendar — phase 07. Times only; see backend/app/routers/calendar.py.
 // ---------------------------------------------------------------------------
 
-export type BusyResponse = {
+export type CalendarEvent = {
+  id: string;
+  /** "Busy" when the event carries no summary we are allowed to see. */
+  title: string;
+  starts_at: string;
+  ends_at: string;
+};
+
+export type CalendarResponse = {
   /**
    * False when the Calendar scope was never granted — which is every account
    * connected before phase 07 existed. Not an error: the planner simply
    * treats every waking hour as free and the Week page says so once, quietly.
    */
   granted: boolean;
-  busy: { starts_at: string; ends_at: string }[];
+  events: CalendarEvent[];
 };
 
-export const getBusy = (days = 7) => api<BusyResponse>(`/calendar/busy?days=${days}`);
+export const getCalendar = (days = 7) =>
+  api<CalendarResponse>(`/calendar/events?days=${days}`);

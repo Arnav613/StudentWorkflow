@@ -1,15 +1,20 @@
-"""Busy intervals, and nothing else.
+"""The user's calendar, read-only, as titles and times.
 
-This is the only route in the app that touches Google Calendar, it is
-read-only, and it is narrower than read-only: it returns start/end pairs. No
-event title, description, location or guest list is requested, received,
-logged or stored — see `google.list_busy`, which uses freeBusy precisely
-because that endpoint cannot return those things even by accident.
+This is the only route in the app that touches Google Calendar and it is
+read-only in the strict sense: there is no write path anywhere in this file or
+in `google.list_events`, so a calendar this app can read is a calendar it
+cannot damage. PLAN.md reversed "no Calendar integration" to "read-only" on
+exactly that condition — a calendar this app could write to would need
+reconciling in two places the next time a meeting moved.
 
-No write path exists here. PLAN.md reversed "no Calendar integration" to
-"read-only" on exactly that condition: the planner has to know which hours are
-taken, and a calendar this app can write to is a calendar that has to be
-reconciled in two places the next time a meeting moves.
+It reads events rather than free/busy, and therefore *does* receive event
+titles, which reach the browser so the week can say "Econ lecture" instead of
+"Busy". An earlier version used freeBusy, which returns start/end pairs and is
+structurally incapable of returning a title; that was the stronger privacy
+position and it made the calendar invisible on the grid, which by this app's
+own rule — never let silence look like a bug — was the worse failure. Titles
+are the deliberate trade. Descriptions, locations, attendees and organisers
+are still neither requested nor passed on.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -32,12 +37,14 @@ RECONNECT = status.HTTP_409_CONFLICT
 MAX_DAYS = 21
 
 
-class BusyInterval(BaseModel):
+class CalendarEvent(BaseModel):
+    id: str
+    title: str
     starts_at: str
     ends_at: str
 
 
-class BusyResponse(BaseModel):
+class CalendarResponse(BaseModel):
     """Whether we may look, and what we saw.
 
     `granted` is false rather than an error when the user has not given the
@@ -48,7 +55,7 @@ class BusyResponse(BaseModel):
     """
 
     granted: bool
-    busy: list[BusyInterval] = []
+    events: list[CalendarEvent] = []
 
 
 def _require_enabled(settings: Settings = Depends(get_settings)) -> Settings:
@@ -66,13 +73,13 @@ def _require_enabled(settings: Settings = Depends(get_settings)) -> Settings:
     return settings
 
 
-@router.get("/busy", response_model=BusyResponse)
-async def busy(
+@router.get("/events", response_model=CalendarResponse)
+async def events(
     days: int = Query(default=7, ge=1, le=MAX_DAYS),
     user: CurrentUser = Depends(get_current_user),
     _: Settings = Depends(_require_enabled),
-) -> BusyResponse:
-    """The next `days` days of occupied time, from now.
+) -> CalendarResponse:
+    """The next `days` days of committed time, from now.
 
     From now, not from midnight: hours that have already passed cannot be
     planned into, so asking about them would only widen the query.
@@ -91,20 +98,16 @@ async def busy(
     # the user simply never granted look identical from the response body, and
     # only one of them is worth telling anyone about.
     if google.CALENDAR_SCOPE not in grant.scopes:
-        return BusyResponse(granted=False)
+        return CalendarResponse(granted=False)
 
     try:
-        rows = await google.list_busy(grant.token, start, end)
+        rows = await google.list_events(grant.token, start, end)
     except google.ReconnectRequired as exc:
         raise HTTPException(status_code=RECONNECT, detail=str(exc)) from exc
     except google.ClassroomError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
-    return BusyResponse(
+    return CalendarResponse(
         granted=True,
-        busy=[
-            BusyInterval(starts_at=r["start"], ends_at=r["end"])
-            for r in rows
-            if r.get("start") and r.get("end")
-        ],
+        events=[CalendarEvent(**r) for r in rows],
     )

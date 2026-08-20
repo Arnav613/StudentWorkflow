@@ -227,55 +227,112 @@ def due_at(coursework: dict) -> datetime | None:
 
 
 # ---------------------------------------------------------------------------
-# Calendar — read-only, and narrower than read-only.
+# Calendar — read-only, and read-only is the whole of the guarantee.
 # ---------------------------------------------------------------------------
 
 
-async def list_busy(token: str, start: datetime, end: datetime) -> list[dict]:
-    """Which intervals are already taken, between two instants.
+def _is_busy(event: dict) -> bool:
+    """Whether an event actually occupies the time it sits on.
 
-    freeBusy, not events.list, and the difference is the entire point. The
-    planner needs to know that Tuesday 2–4pm is gone; it does not need to know
-    it is gone because of a doctor's appointment. freeBusy answers exactly the
-    first question and is structurally incapable of answering the second, so
-    no event title, description, location or attendee ever leaves Google — not
-    because this code chooses not to log them, but because it never receives
-    them.
+    Four things on a calendar are not a commitment, and treating them as one
+    would carve holes out of a week that is genuinely free:
 
-    There is no write path in this file. A calendar the app cannot write to is
-    a calendar it cannot corrupt, and a last-minute meeting then needs
-    reconciling in one place instead of two.
+    Events marked Free. `transparency: "transparent"` is Google's own word for
+    "this is on my calendar but I am available", which is precisely the
+    question being asked here.
+
+    All-day events. A holiday or a term marker is a label on a day, not
+    twenty-four hours of occupation, and reading one as busy would delete a
+    whole column from the plan.
+
+    Invitations you declined. A meeting you said no to is not a meeting.
+
+    Cancelled events, which `singleEvents` can still return.
     """
+    if event.get("status") == "cancelled":
+        return False
+    if event.get("transparency") == "transparent":
+        return False
+    if not (event.get("start") or {}).get("dateTime"):
+        return False
+    for attendee in event.get("attendees") or []:
+        if attendee.get("self") and attendee.get("responseStatus") == "declined":
+            return False
+    return True
+
+
+async def list_events(token: str, start: datetime, end: datetime) -> list[dict]:
+    """The user's own events between two instants, as title and times.
+
+    This reads events, not free/busy. It therefore receives event titles, and
+    they reach the browser so the week grid can say "Econ lecture" rather than
+    "Busy" — which is the whole reason for reading events at all, and is a
+    deliberate widening of what the earlier freeBusy version could see.
+
+    What has not changed, and is the actual guarantee: there is no write path
+    in this file. Nothing here can create, move or delete an event, so a
+    calendar this app can read is still a calendar it cannot damage — and a
+    meeting that moves needs reconciling in one place, not two.
+
+    Only the primary calendar. Enumerating everything subscribed would drag in
+    holidays, birthdays and a shared timetable nobody meant to plan around.
+
+    `singleEvents` expands a recurring event into its actual occurrences.
+    Without it a weekly seminar arrives as one master row with a recurrence
+    rule this code would have to interpret itself — a second implementation of
+    something Google already does correctly.
+    """
+    out: list[dict] = []
+    page: str | None = None
+
     async with httpx.AsyncClient(
         base_url=CALENDAR,
         headers={"Authorization": f"Bearer {token}"},
         timeout=30.0,
     ) as http:
-        res = await http.post(
-            "/freeBusy",
-            json={
+        while True:
+            params: dict[str, Any] = {
                 "timeMin": start.astimezone(timezone.utc).isoformat(),
                 "timeMax": end.astimezone(timezone.utc).isoformat(),
-                # "primary" is the calendar the user actually lives in.
-                # Enumerating every subscribed calendar would drag in holidays,
-                # birthdays and a shared timetable nobody meant to plan around.
-                "items": [{"id": "primary"}],
-            },
-        )
+                "singleEvents": "true",
+                "orderBy": "startTime",
+                "maxResults": 250,
+            }
+            if page:
+                params["pageToken"] = page
 
-    if res.status_code == 401:
-        raise ReconnectRequired(res.text)
-    if res.status_code == 403:
-        raise ClassroomError(
-            "Calendar refused the request (403). The Calendar API may not be "
-            f"enabled for this project: {res.text}"
-        )
-    if res.status_code >= 400:
-        raise ClassroomError(f"freeBusy -> {res.status_code}: {res.text}")
+            res = await http.get("/calendars/primary/events", params=params)
 
-    body = res.json()
-    calendar = (body.get("calendars") or {}).get("primary") or {}
-    # Google reports per-calendar errors inside a 200. A "notFound" here means
-    # the account has no primary calendar, which is not an error worth raising
-    # — it is an empty week, and the planner handles that fine.
-    return calendar.get("busy", [])
+            if res.status_code == 401:
+                raise ReconnectRequired(res.text)
+            if res.status_code == 403:
+                raise ClassroomError(
+                    "Calendar refused the request (403). The Calendar API may "
+                    f"not be enabled for this project: {res.text}"
+                )
+            if res.status_code == 404:
+                # No primary calendar on the account. An empty week, not an
+                # error — the planner handles that perfectly well.
+                return []
+            if res.status_code >= 400:
+                raise ClassroomError(f"events -> {res.status_code}: {res.text}")
+
+            body = res.json()
+            for event in body.get("items", []):
+                if not _is_busy(event):
+                    continue
+                out.append(
+                    {
+                        "id": event.get("id", ""),
+                        # A private event on a shared calendar comes back with
+                        # no summary at all. "Busy" is the honest rendering of
+                        # a thing we know occupies time and nothing else.
+                        "title": event.get("summary") or "Busy",
+                        "starts_at": event["start"]["dateTime"],
+                        "ends_at": event["end"]["dateTime"],
+                    }
+                )
+
+            page = body.get("nextPageToken")
+            if not page:
+                return out

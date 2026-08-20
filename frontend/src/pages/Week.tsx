@@ -12,7 +12,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import * as db from "../lib/db";
-import { getBusy, type BusyResponse } from "../lib/api";
+import { getCalendar, type CalendarEvent, type CalendarResponse } from "../lib/api";
 import { toast } from "../lib/toast";
 import { formatDue } from "../lib/board";
 import {
@@ -53,7 +53,7 @@ export default function WeekPage({
 }) {
   const { classes, tasks, routines, planBlocks, planFrom, refresh, userId } = store;
   const [generating, setGenerating] = useState(false);
-  const [calendar, setCalendar] = useState<BusyResponse | "off" | null>(null);
+  const [calendar, setCalendar] = useState<CalendarResponse | "off" | null>(null);
 
   const days = useMemo(() => planDays(planFrom, DAYS), [planFrom]);
   const medians = useMemo(() => classMedians(tasks), [tasks]);
@@ -79,7 +79,7 @@ export default function WeekPage({
    */
   useEffect(() => {
     let live = true;
-    getBusy(DAYS)
+    getCalendar(DAYS)
       .then((res) => live && setCalendar(res))
       // Every failure means the same thing here: plan without it. A dead
       // grant, a sleeping Render and a deployment with Google switched off
@@ -91,7 +91,17 @@ export default function WeekPage({
     };
   }, []);
 
+  /*
+   * Events are rendered, not stored. They are Google's rows, refetched every
+   * open, and copying them into plan_blocks would make this app the second
+   * owner of a fact it cannot edit — a lecture that moved would then be in
+   * two places, one of them wrong.
+   */
+  const events: CalendarEvent[] =
+    calendar && calendar !== "off" && calendar.granted ? calendar.events : [];
+
   const blocksByDay = byDay(planBlocks, days);
+  const eventsByDay = byDay(events, days);
   const outstanding = unscheduled(tasks, planBlocks, medians)
     .map((u) => ({ ...u, task: taskById.get(u.task_id) }))
     .filter((u): u is typeof u & { task: Task } => Boolean(u.task));
@@ -103,7 +113,10 @@ export default function WeekPage({
   async function regenerate() {
     setGenerating(true);
     try {
-      const busy = calendar && calendar !== "off" && calendar.granted ? calendar.busy : [];
+      // The scheduler takes intervals, not titles. It is given the events
+      // because they are the same shape; it has no idea what any of them are,
+      // and that is the correct amount for a scheduler to know.
+      const busy = events;
       // `from` is now, not planFrom: today's morning is over and nothing can
       // be scheduled into it. The columns still start at midnight so the week
       // reads as a week.
@@ -253,14 +266,20 @@ export default function WeekPage({
         <div className="week">
           {days.map((day, i) => (
             <DayColumn key={day.getTime()} index={i} day={day}>
-              {blocksByDay[i].length === 0 ? (
-                <p className="muted small day-empty">Free</p>
-              ) : (
-                <ul className="list blocks">
-                  {blocksByDay[i]
-                    .slice()
-                    .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at))
-                    .map((block) => (
+              {(() => {
+                /*
+                 * Plan and calendar in one column, in clock order.
+                 *
+                 * Merged here rather than upstream because they are genuinely
+                 * different things that happen to share an axis: a block is a
+                 * decision this app made and can move, an event is a fact from
+                 * Google that it can only read. Folding events into
+                 * `planBlocks` would let a drag try to move a lecture.
+                 */
+                const items = [
+                  ...blocksByDay[i].map((block) => ({
+                    at: Date.parse(block.starts_at),
+                    node: (
                       <BlockCard
                         key={block.id}
                         block={block}
@@ -273,9 +292,19 @@ export default function WeekPage({
                         onDrop={() => void drop(block)}
                         onOpenClass={onOpenClass}
                       />
-                    ))}
-                </ul>
-              )}
+                    ),
+                  })),
+                  ...eventsByDay[i].map((event) => ({
+                    at: Date.parse(event.starts_at),
+                    node: <EventCard key={`e-${event.id}`} event={event} />,
+                  })),
+                ].sort((a, b) => a.at - b.at);
+
+                if (!items.length) {
+                  return <p className="muted small day-empty">Free</p>;
+                }
+                return <ul className="list blocks">{items.map((i) => i.node)}</ul>;
+              })()}
             </DayColumn>
           ))}
         </div>
@@ -361,6 +390,27 @@ function DayColumn({
       </h2>
       {children}
     </section>
+  );
+}
+
+/**
+ * One event from Google Calendar.
+ *
+ * Never draggable, never editable, never deletable. It is not this app's row:
+ * it is read from Google on every open and rendered, and a control that
+ * appeared to move a lecture would be lying about what it could do.
+ */
+function EventCard({ event }: { event: CalendarEvent }) {
+  return (
+    <li className="card block event hue-none">
+      <div className="row block-time">
+        <span className="muted small grow">
+          {clockOf(event.starts_at)} – {clockOf(event.ends_at)}
+        </span>
+        <span className="tag">Calendar</span>
+      </div>
+      <span className="block-title">{event.title}</span>
+    </li>
   );
 }
 

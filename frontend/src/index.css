@@ -2137,16 +2137,25 @@ button.link.danger:hover:not(:disabled) {
   border-left-color: var(--accent);
 }
 
-/* Routines are not work and do not read as work: no shadow, no grab cursor,
-   a hatched-looking flat surface that says "this hour is gone" rather than
-   "do this". */
-.list > li.card.block.routine {
+/* Routines and calendar events are not work and do not read as work: no
+   shadow, no grab cursor, a flat sunken surface that says "this hour is gone"
+   rather than "do this". Both are time you cannot spend twice; neither is
+   something to tick off. */
+.list > li.card.block.routine,
+.list > li.card.block.event {
   background: var(--sunken);
   border-style: dashed;
   border-left-style: dashed;
   box-shadow: none;
   cursor: default;
   color: var(--muted);
+}
+
+/* An event carries a real title from Google, so unlike a routine it gets full
+   contrast on it — the whole reason for reading events rather than free/busy
+   was to be able to say which lecture it is. */
+.list > li.card.block.event .block-title {
+  color: var(--fg);
 }
 
 /* ---- The unplanned rail ------------------------------------------------- */
