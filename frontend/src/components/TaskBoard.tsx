@@ -12,6 +12,7 @@ import {
   useSensor,
   useSensors,
   type CollisionDetection,
+  type DragCancelEvent,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
@@ -36,6 +37,29 @@ import TaskDialog from "./TaskDialog";
 import SelectionBar from "./SelectionBar";
 import EstimatePicker from "./EstimatePicker";
 import ClassPicker from "./ClassPicker";
+
+/**
+ * `?dnd=debug` in the address bar narrates the drag as it happens.
+ *
+ * A touch drag can only be watched on the device it is happening on, where
+ * there is no console and no second hand free. Read once, so it cannot be
+ * turned on by a re-render.
+ */
+const DEBUG =
+  typeof location !== "undefined" &&
+  new URLSearchParams(location.search).get("dnd") === "debug";
+
+function trace(what: string) {
+  if (DEBUG) toast(what);
+}
+
+/** A finger that lifted a card and put it back down where it found it. */
+function stationaryTouch(e: DragEndEvent | DragCancelEvent): boolean {
+  const byTouch = String((e.activatorEvent as Event | null)?.type).startsWith(
+    "touch",
+  );
+  return byTouch && Math.abs(e.delta.x) < 8 && Math.abs(e.delta.y) < 8;
+}
 
 /** Toggle one, said in the language `select` already speaks. */
 const TOUCH_TOGGLE = { ctrlKey: true, metaKey: false, shiftKey: false };
@@ -282,6 +306,7 @@ export default function TaskBoard({
     if (String((e.activatorEvent as Event | null)?.type).startsWith("touch")) {
       navigator.vibrate?.(10);
     }
+    trace(`start · ${e.active.id}`);
 
     const id = String(e.active.id);
     const head = parseGroupHandle(id);
@@ -331,7 +356,28 @@ export default function TaskBoard({
    * two groups, because there is no such thing as a group inside a group and
    * the alternative is a gesture that can silently swallow eleven readings.
    */
+  /*
+   * A lift the browser took back.
+   *
+   * A finger that has lifted a card and not moved it is a finger resting on a
+   * page the browser still thinks it might be asked to scroll, magnify or
+   * select from — and any of those arrives as a cancel rather than an end.
+   * Losing the drag there is right; losing the *selection* is not, because to
+   * the person holding the phone nothing happened at all. So a cancelled lift
+   * that never travelled still answers "this one".
+   */
+  function onDragCancel(e: DragCancelEvent) {
+    trace(`cancel · ${Math.round(e.delta.x)},${Math.round(e.delta.y)}`);
+    const held = dragging;
+    setDragging(null);
+    setDropAt(null);
+    if (held?.kind === "task" && stationaryTouch(e)) {
+      selection.select(held.task.id, TOUCH_TOGGLE);
+    }
+  }
+
   function onDragEnd(e: DragEndEvent) {
+    trace(`end · ${Math.round(e.delta.x)},${Math.round(e.delta.y)} · over ${e.over?.id ?? "nothing"}`);
     const held = dragging;
     setDragging(null);
     setDropAt(null);
@@ -349,11 +395,7 @@ export default function TaskBoard({
      * target is resolved, because the card under a card released in place is
      * its neighbour, and that would be a silent reorder.
      */
-    const byTouch = String((e.activatorEvent as Event | null)?.type).startsWith(
-      "touch",
-    );
-    const still = Math.abs(e.delta.x) < 8 && Math.abs(e.delta.y) < 8;
-    if (byTouch && still) {
+    if (stationaryTouch(e)) {
       if (held.kind === "task") selection.select(held.task.id, TOUCH_TOGGLE);
       return;
     }
@@ -717,10 +759,7 @@ export default function TaskBoard({
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDragEnd={onDragEnd}
-      onDragCancel={() => {
-        setDragging(null);
-        setDropAt(null);
-      }}
+      onDragCancel={onDragCancel}
     >
       <div className="board">
         {COLUMNS.map(({ status, label }) => (

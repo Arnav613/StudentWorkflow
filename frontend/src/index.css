@@ -2841,11 +2841,16 @@ button.link.danger:hover:not(:disabled) {
 }
 
 /* A shift-click across a column must not leave half the board highlighted
-   blue, so the cards themselves do not take a text selection. */
+   blue, so the cards themselves do not take a text selection.
+   The callout is the touchscreen half of the same sentence, and it is load
+   bearing: a long press on iOS otherwise raises the magnifier and cancels the
+   touch out from under the drag that press was starting. */
 .rail-item,
+.group-head,
 .list > li.card {
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* A card is a handle, not prose. Its description used to unfold inside it and

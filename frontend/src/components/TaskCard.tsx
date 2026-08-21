@@ -109,6 +109,11 @@ export default function TaskCard({
   const from = useRef<{ x: number; y: number } | null>(null);
   const began = useRef(0);
 
+  /*
+   * Android raises a context menu about half a second into a press, and the
+   * touch stream it cancels on the way there is the one the drag is riding.
+   * There is nothing on a card a long press should offer anyway.
+   */
   function onTouchStart(e: React.TouchEvent) {
     const t = e.touches[0];
     moved.current = false;
@@ -149,6 +154,7 @@ export default function TaskCard({
       {...listeners}
       {...attributes}
       onPointerDownCapture={onPointerDownCapture}
+      onContextMenu={(e) => e.preventDefault()}
       onTouchStart={onTouchStart}
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
