@@ -2256,6 +2256,10 @@ button.link.danger:hover:not(:disabled) {
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
+  /* The touchscreen half of the same sentence: a long press is how a block is
+     picked up, and a magnifier or a callout raised over it cancels the touch
+     the drag is riding on. */
+  -webkit-touch-callout: none;
   /* `bottom` is in the transition because a drop pushes its neighbours later
      and they preview that move live: sliding says "this one moved", where a
      jump says "the chart redrew". */

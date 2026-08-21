@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   KeyboardSensor,
   pointerWithin,
   rectIntersection,
@@ -11,6 +12,7 @@ import {
   useSensor,
   useSensors,
   type CollisionDetection,
+  type DragCancelEvent,
   type DragEndEvent,
   type DragMoveEvent,
   type DragStartEvent,
@@ -1288,8 +1290,22 @@ export default function WeekPage({
 
   const [dragging, setDragging] = useState<DragSubject | null>(null);
 
+  /*
+   * A mouse and a finger want opposite activation rules — the same split the
+   * board makes, for the same reason.
+   *
+   * A mouse gets distance: a drag must not start on a click aimed at a
+   * block's panel. A finger cannot get distance, because a touch that has
+   * moved five pixels on a page that scrolls has already been taken by the
+   * browser as a scroll and the drag dies with it. So the two gestures are
+   * separated in time instead: hold briefly and the block lifts, move first
+   * and the week scrolls under your finger as it always did.
+   */
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 220, tolerance: 8 },
+    }),
     useSensor(KeyboardSensor),
   );
 
@@ -1406,7 +1422,36 @@ export default function WeekPage({
     setPreview(resolveDrop(dragging, e.over?.id, e.activatorEvent, e.delta.y));
   }
 
+  /** Which id the selection knows this subject by. */
+  function idOf(subject: DragSubject): string {
+    return subject.kind === "task"
+      ? `task:${subject.task.id}`
+      : `block:${subject.block.id}`;
+  }
+
+  /*
+   * A lift the browser took back.
+   *
+   * A finger resting on a page the browser still thinks it might be asked to
+   * scroll, magnify or open a menu from arrives as a cancel rather than an
+   * end. Losing the drag there is right; losing the selection is not, because
+   * to the person holding the phone nothing happened at all.
+   */
+  function onDragCancel(e: DragCancelEvent) {
+    const subject = dragging;
+    setDragging(null);
+    setPreview(null);
+    if (subject && stationaryTouch(e)) {
+      selection.select(idOf(subject), TOUCH_TOGGLE);
+    }
+  }
+
   function onDragStart(e: DragStartEvent) {
+    // The lift is the only thing that says the hold registered, and on a
+    // phone the block is under a finger while it happens.
+    if (String((e.activatorEvent as Event | null)?.type).startsWith("touch")) {
+      navigator.vibrate?.(10);
+    }
     setOpenId(null);
     setPreview(null);
     const id = String(e.active.id);
@@ -1429,16 +1474,34 @@ export default function WeekPage({
     const subject = dragging;
     setDragging(null);
     setPreview(null);
+    if (!subject) return;
+
+    /*
+     * A lift that never travelled is not a move — it is the touchscreen's
+     * ctrl-click.
+     *
+     * A finger has no modifier to hold, so the hold that picks a block up is
+     * also the only gesture available for "this one". Which of the two it was
+     * is answered by the finger at the end rather than at the start: move and
+     * it is the move it looked like, let go where you started and the block
+     * stays where it is and is selected instead. Asked before the drop is
+     * read, because a block released in place is still over its own column,
+     * and that would be a silent retime to the minute it already had.
+     */
+    if (stationaryTouch(e)) {
+      selection.select(idOf(subject), TOUCH_TOGGLE);
+      return;
+    }
+
     const over = e.over?.id;
-    if (!subject || typeof over !== "string") return;
+    if (typeof over !== "string") return;
 
     /*
      * A dragged thing that is part of the selection brings the selection with
      * it. Anything outside the selection is just itself, and leaves the
      * selection alone rather than silently clearing it.
      */
-    const activeId =
-      subject.kind === "task" ? `task:${subject.task.id}` : `block:${subject.block.id}`;
+    const activeId = idOf(subject);
     const group = selection.count > 1 && selection.has(activeId);
 
     /* Off the board, into the rail. The only way to remove anything. */
@@ -1833,10 +1896,7 @@ export default function WeekPage({
         onDragStart={onDragStart}
         onDragMove={onDragMove}
         onDragEnd={(e) => void onDragEnd(e)}
-        onDragCancel={() => {
-          setDragging(null);
-          setPreview(null);
-        }}
+        onDragCancel={onDragCancel}
       >
         {/*
           The chart. Seven bars and the axis they are measured against.
@@ -2134,8 +2194,26 @@ function sitting(minutes: number): number {
 }
 
 /** Where the pointer is, from the event that started the drag. */
+/** A finger that lifted a block and put it back down where it found it. */
+function stationaryTouch(e: DragEndEvent | DragCancelEvent): boolean {
+  const byTouch = String((e.activatorEvent as Event | null)?.type).startsWith(
+    "touch",
+  );
+  return byTouch && Math.abs(e.delta.x) < 8 && Math.abs(e.delta.y) < 8;
+}
+
+/** Toggle one, said in the language `select` already speaks. */
+const TOUCH_TOGGLE = { ctrlKey: true, metaKey: false, shiftKey: false };
+
 function pointerYOf(e: Event | null): number {
   if (e && "clientY" in e) return (e as PointerEvent).clientY;
+  // A touch keeps its coordinates one level down, and reading past it would
+  // put every dropped block at the foot of the axis instead of under the
+  // finger — the height of the cursor in the column is the time.
+  if (typeof TouchEvent !== "undefined" && e instanceof TouchEvent) {
+    const t = e.touches[0] ?? e.changedTouches[0];
+    if (t) return t.clientY;
+  }
   return 0;
 }
 
@@ -2499,6 +2577,10 @@ function BlockBar({
         if (isSelectClick(e)) return;
         onToggle();
       }}
+      /* Android raises a context menu about half a second into a press, and
+         the touch stream it cancels on the way there is the one carrying the
+         drag that press was starting. */
+      onContextMenu={(e) => e.preventDefault()}
       /*
        * A modified click selects, and stops being anything else — no panel,
        * no drag. Caught on the way down so dnd-kit's own listener never sees
@@ -2835,6 +2917,7 @@ function RailItem({
         e.stopPropagation();
         onSelect(e);
       }}
+      onContextMenu={(e) => e.preventDefault()}
       aria-selected={selected}
     >
       <span className="dot" />
