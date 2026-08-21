@@ -37,6 +37,9 @@ import SelectionBar from "./SelectionBar";
 import EstimatePicker from "./EstimatePicker";
 import ClassPicker from "./ClassPicker";
 
+/** Toggle one, said in the language `select` already speaks. */
+const TOUCH_TOGGLE = { ctrlKey: true, metaKey: false, shiftKey: false };
+
 const EMPTY: Record<TaskStatus, string> = {
   todo: "Nothing waiting.",
   doing: "Drag something here when you start it.",
@@ -274,6 +277,12 @@ export default function TaskBoard({
   };
 
   function onDragStart(e: DragStartEvent) {
+    // The lift is the only thing that says the hold registered, and on a
+    // phone the card is under a finger while it happens.
+    if (String((e.activatorEvent as Event | null)?.type).startsWith("touch")) {
+      navigator.vibrate?.(10);
+    }
+
     const id = String(e.active.id);
     const head = parseGroupHandle(id);
     if (head) {
@@ -327,6 +336,27 @@ export default function TaskBoard({
     setDragging(null);
     setDropAt(null);
     if (!held) return;
+
+    /*
+     * A lift that never travelled is not a move — it is the touchscreen's
+     * ctrl-click.
+     *
+     * A finger has no modifier to hold, so the hold that picks a card up is
+     * also the only gesture available for "this one". Which of the two it was
+     * is answered at the end rather than the start, by the finger: move and it
+     * is the move it looked like all along, let go where you started and the
+     * card goes back and is selected instead. The check has to come before the
+     * target is resolved, because the card under a card released in place is
+     * its neighbour, and that would be a silent reorder.
+     */
+    const byTouch = String((e.activatorEvent as Event | null)?.type).startsWith(
+      "touch",
+    );
+    const still = Math.abs(e.delta.x) < 8 && Math.abs(e.delta.y) < 8;
+    if (byTouch && still) {
+      if (held.kind === "task") selection.select(held.task.id, TOUCH_TOGGLE);
+      return;
+    }
 
     const target = resolve(e);
     if (!target) return; // released over nothing: no-op, not a delete

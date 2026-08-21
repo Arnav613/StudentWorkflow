@@ -95,57 +95,49 @@ export default function TaskCard({
   /*
    * The same two gestures, for a hand that has no ctrl and no shift.
    *
-   * Press and hold turns selecting on and takes this card with it; after that
-   * a plain tap adds or removes one, until the bar is dismissed. This is the
-   * gesture every phone already uses for "pick several of these", and it is
-   * the only one available — there is no modifier to hold on a touchscreen,
-   * which is why selection was simply unreachable there.
+   * A hold lifts the card — that is the drag sensor in TaskBoard, not
+   * anything here — and what happens next is decided by the finger. Move, and
+   * it is the move it already looks like. Let go without moving, and the lift
+   * was the question "this one?" and the answer is a selection; TaskBoard
+   * reads that off a drag that travelled nowhere.
    *
-   * The hold has to be taken away from the drag sensor to be able to mean
-   * this, so a finger drags from the grip instead and a touch anywhere else
-   * on the card is stopped before dnd-kit's own listener sees it. A mouse is
-   * untouched: it still picks the whole card up, because it has modifiers for
-   * the other half.
+   * Once something is selected the board is in selecting mode and a plain tap
+   * toggles one more, which is the only part that lives here: a tap never
+   * reaches the sensor, because it is over before the hold is up.
    */
-  const hold = useRef<number | null>(null);
-  const held = useRef(false);
+  const moved = useRef(false);
+  const from = useRef<{ x: number; y: number } | null>(null);
+  const began = useRef(0);
 
-  function cancelHold() {
-    if (hold.current !== null) window.clearTimeout(hold.current);
-    hold.current = null;
+  function onTouchStart(e: React.TouchEvent) {
+    const t = e.touches[0];
+    moved.current = false;
+    began.current = Date.now();
+    from.current = t ? { x: t.clientX, y: t.clientY } : null;
   }
 
-  function onTouchStartCapture(e: React.TouchEvent) {
-    if (!onSelect) return;
-    if ((e.target as HTMLElement).closest(".grip")) return; // that one is a drag
-    e.stopPropagation(); // keep the TouchSensor out of it
-
-    held.current = false;
-    cancelHold();
-    hold.current = window.setTimeout(() => {
-      hold.current = null;
-      held.current = true;
-      // A hold that produced a selection should not also feel like nothing
-      // happened; where the device can, it says so.
-      navigator.vibrate?.(10);
-      onSelect(TOGGLE);
-    }, 420);
+  function onTouchMove(e: React.TouchEvent) {
+    const t = e.touches[0];
+    const a = from.current;
+    if (!t || !a) return;
+    if (Math.abs(t.clientX - a.x) > 8 || Math.abs(t.clientY - a.y) > 8) {
+      moved.current = true;
+    }
   }
 
   function onTouchEnd(e: React.TouchEvent) {
+    const still = !moved.current;
+    moved.current = false;
     // A button inside the card is still a button while selecting. Open has to
     // keep opening, or the mode has quietly disabled half the card.
-    if ((e.target as HTMLElement).closest("button, a")) {
-      cancelHold();
-      held.current = false;
-      return;
-    }
-    const wasHold = held.current;
-    held.current = false;
-    cancelHold();
-    // In selecting mode a tap is the selection gesture and nothing else. The
-    // hold that started the mode must not immediately toggle itself back off.
-    if (onSelect && selecting && !wasHold) onSelect(TOGGLE);
+    if ((e.target as HTMLElement).closest("button, a")) return;
+    // A tap, and only while the mode is already on. The hold that turns it on
+    // is the drag sensor's to report, or every lift would toggle twice.
+    // Short, because anything longer was a hold and the hold belongs to the
+    // sensor — asking `isDragging` instead would be asking React a question
+    // about a state update that has not landed yet.
+    const tap = still && Date.now() - began.current < 200;
+    if (onSelect && selecting && tap && !isDragging) onSelect(TOGGLE);
   }
 
   return (
@@ -157,10 +149,9 @@ export default function TaskCard({
       {...listeners}
       {...attributes}
       onPointerDownCapture={onPointerDownCapture}
-      onTouchStartCapture={onTouchStartCapture}
-      onTouchMove={cancelHold}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
-      onTouchCancel={cancelHold}
       aria-selected={onSelect ? selected : undefined}
       className={`card ${cls ? `hue-${cls.color}` : "hue-none"} ${
         isDragging ? "dragging" : ""
@@ -174,10 +165,6 @@ export default function TaskCard({
         >
           {task.title}
         </span>
-        {/* Only a finger needs this: a mouse drags the card itself. Hidden
-            from the reading order because it is not a control, it is the
-            same drag the card already offers, reachable by touch. */}
-        <span className="grip" aria-hidden="true" title="Drag" />
         <button className="link" onClick={() => onOpen(task)}>
           Open
         </button>
