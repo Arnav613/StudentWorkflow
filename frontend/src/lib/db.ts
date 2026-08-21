@@ -205,6 +205,12 @@ export async function createTask(input: {
   class_id?: string | null;
   status?: TaskStatus;
   estimate_minutes?: number | null;
+  /**
+   * Where in its column it lands. Effectively required since 0016 — the
+   * column default of 0 sorts above every numbered row, so a task created
+   * without one arrives at the top of the board. See board.slotPosition.
+   */
+  position?: number;
 }): Promise<Task> {
   // source is left to the column default of 'manual'. The backend sync is the
   // only thing that ever writes 'classroom', and it writes it explicitly.
@@ -223,6 +229,8 @@ export async function updateTask(
       | "status"
       | "position"
       | "estimate_minutes"
+      | "group_id"
+      | "status_overridden"
     >
   >,
 ): Promise<Task> {
@@ -245,9 +253,11 @@ export async function updateTask(
  * when you submit it on Classroom. The flag is never cleared once set —
  * having stated a preference, you should not have to keep restating it.
  *
- * `position` is optional because it is only a tie-break: columns sort by due
- * date, so dropping a dated task anywhere in a column lands it where its
- * deadline says. Undated tasks are the only ones this argument moves.
+ * `position` is optional only because the keyboard path (the Column select
+ * inside a task's dialog) has no opinion about where in the column the card
+ * should land, and appending is the least surprising answer to a gesture that
+ * named a column and nothing else. A drag always passes one: since 0016 the
+ * column is in hand-chosen order and position is the whole of it.
  *
  * completed_at and archived_at are not written here — a database trigger sets
  * completed_at on the way into 'done' and clears both on the way out, so
@@ -330,6 +340,39 @@ export async function moveTasks(
       .update({ status })
       .in("id", tasks.map((t) => t.id))
       .select(),
+  );
+}
+
+/**
+ * Write a reordering.
+ *
+ * One row at a time, in parallel. The obvious alternative is a single upsert
+ * carrying every changed row, and it is a trap: upsert needs the full row for
+ * anything it might insert, so a race that deleted a task a moment ago would
+ * see it resurrected here with whatever stale copy the board was holding. A
+ * plain update per id can only ever change a row that still exists.
+ *
+ * The count is small by construction — `reorder` returns only the rows whose
+ * number actually changed, which for a card dragged two places up is three.
+ *
+ * `status_overridden` is set here for exactly the reason `moveTask` sets it:
+ * dragging a card out of Done after sync put it there is a disagreement with
+ * sync, and sync should stop arguing. Ordinary reordering never touches it.
+ */
+export async function reorderTasks(
+  updates: {
+    id: string;
+    position: number;
+    status?: TaskStatus;
+    group_id?: string | null;
+    status_overridden?: boolean;
+  }[],
+): Promise<Task[]> {
+  if (!updates.length) return [];
+  return Promise.all(
+    updates.map(({ id, ...patch }) =>
+      updateTask(id, patch as Parameters<typeof updateTask>[1]),
+    ),
   );
 }
 

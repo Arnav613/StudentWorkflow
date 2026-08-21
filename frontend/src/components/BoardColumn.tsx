@@ -3,12 +3,16 @@ import { useDroppable } from "@dnd-kit/core";
 import type { TaskStatus } from "../lib/types";
 
 /**
- * A column is a drop target and nothing more.
+ * A column is a drop target, and since migration 0016 it is a drop target with
+ * an opinion about where.
  *
- * There is no drop *position* within a column, because there is no such thing:
- * a column sorts by due date, so a card lands where its deadline puts it, not
- * where the cursor was released. Pretending otherwise — an insertion line that
- * the sort then overrules — would be a lie told in animation.
+ * It used to be the only one: a column sorted itself by due date, so a card
+ * landed where its deadline put it and an insertion line would have been a lie
+ * told in animation. Now the order is whatever a hand made it, so the cards
+ * themselves are the precise targets — see TaskCard — and this is what is left
+ * over. Bare column space means the end of the column, and out of any group.
+ * Which makes it the way out of a group, and the reason it is padded rather
+ * than shrink-wrapped around the cards.
  */
 export default function BoardColumn({
   status,
@@ -23,7 +27,7 @@ export default function BoardColumn({
   children: ReactNode;
   empty: string;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: status });
+  const { setNodeRef, isOver } = useDroppable({ id: `col:${status}` });
 
   return (
     <section

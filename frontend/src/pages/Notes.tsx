@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as db from "../lib/db";
+import { slotPosition } from "../lib/board";
 import type { Class, ScratchLine, Task } from "../lib/types";
 import type { DataStore } from "../hooks/useData";
 import { useAutosave } from "../hooks/useAutosave";
@@ -240,6 +241,10 @@ export default function NotesPage({
         user_id: userId,
         title,
         class_id: line.class_id,
+        // Undated, so the foot of the Do column rather than the head of it.
+        // Without this it would take the column default of 0 and land above
+        // everything — see board.slotPosition.
+        position: slotPosition(tasks, "todo", null),
       });
       await db.updateScratchLine(line.id, { task_id: task.id });
       setLines((prev) =>

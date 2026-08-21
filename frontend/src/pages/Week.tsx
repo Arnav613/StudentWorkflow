@@ -18,7 +18,7 @@ import {
 import * as db from "../lib/db";
 import { getCalendar } from "../lib/api";
 import { errorText, toast, undoable } from "../lib/toast";
-import { formatDue } from "../lib/board";
+import { formatDue, slotPosition } from "../lib/board";
 import {
   DEFAULT_ESTIMATE_MINUTES,
   PLAN_DAYS,
@@ -1742,6 +1742,9 @@ export default function WeekPage({
         title,
         class_id: input.classId || null,
         estimate_minutes: input.estimate,
+        // It has an hour on the Week, which is not a place in a column. The
+        // foot of Do is where it goes, for the reason board.slotPosition gives.
+        position: slotPosition(tasks, "todo", null),
       });
       await db.createTaskBlock({
         user_id: userId,

@@ -1746,30 +1746,6 @@ button.link.danger:hover:not(:disabled) {
   font-weight: 600;
 }
 
-.task-detail {
-  border-top: 1px solid var(--border);
-  margin-top: 0.5rem;
-  padding-top: 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  cursor: auto;
-}
-
-.task-detail p {
-  margin: 0;
-  color: var(--muted);
-}
-
-/* A caption over a control, matching the Column label beside it. Capped
-   rather than full-width: a card is not a form, and an estimate picker
-   stretched across one reads as the card's primary action. */
-.detail-field {
-  display: flex;
-  flex-direction: column;
-  max-width: 12rem;
-}
-
 .checklist {
   margin: 0;
 }
@@ -2868,14 +2844,9 @@ button.link.danger:hover:not(:disabled) {
   -webkit-user-select: none;
 }
 
-/* Except the part of a card that is prose. An opened task shows its
-   description, and a description you cannot select is a description you
-   cannot copy into whatever you are actually writing. Nothing in here starts
-   a drag or a selection, so it costs nothing to hand it back. */
-.list > li.card .task-detail {
-  user-select: text;
-  -webkit-user-select: text;
-}
+/* A card is a handle, not prose. Its description used to unfold inside it and
+   needed selecting back; the description now lives in a dialog, where text is
+   selectable because nothing there is a drag surface. */
 
 /* ---- The bar ------------------------------------------------------------ */
 
@@ -3629,41 +3600,134 @@ button.link.danger:hover:not(:disabled) {
 }
 
 /* ---------------------------------------------------------------------------
-   The board, filed by class
+   Where it will land
    ---------------------------------------------------------------------------
-   The same cards, one column per course, each wearing that course's colour —
-   the colour its cards already wear everywhere else in the app. Sections are
-   drop targets: landing in one is a change of class, exactly as landing in a
-   status column is a change of status.
+   A column is in hand-chosen order now, so a drag has to answer "where",
+   not just "which column". The answer is drawn as a line in the gap the card
+   will occupy — above or below whichever card the pointer is over — because
+   the gap is the thing being chosen and a highlighted card would be naming
+   the wrong object.
+
+   An outline, not a real border: a border would move every card below it by
+   two pixels each time the pointer crossed a midpoint, and a column that
+   shivers while you drag over it is unreadable.
    ------------------------------------------------------------------------ */
 
-.by-class {
+.list > li.card.drop-before,
+.list > li.card.drop-after {
+  position: relative;
+}
+
+.list > li.card.drop-before::before,
+.list > li.card.drop-after::after {
+  content: "";
+  position: absolute;
+  left: -0.15rem;
+  right: -0.15rem;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.list > li.card.drop-before::before { top: -0.27rem; }
+.list > li.card.drop-after::after { bottom: -0.27rem; }
+
+/* Dropping onto a header means joining the group, which is a different answer
+   from "between these two cards" and gets a different mark: the whole run
+   lights up, because the whole run is what the card is joining. */
+.group.drop-into > .group-head {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: var(--r-sm);
+}
+
+.group.drop-into .group-cards {
+  border-left-color: var(--accent);
+}
+
+/* The header is the handle for the whole block. Grab, like a card — the
+   cursor is the only thing that says so before you try it. */
+.group-head {
+  cursor: grab;
+  touch-action: manipulation;
+}
+
+.group-head button,
+.group-head input {
+  cursor: auto;
+}
+
+.group-fold,
+.group-title,
+.group-ungroup {
+  cursor: pointer;
+}
+
+.list > li.group.dragging {
+  opacity: 0.35;
+}
+
+/* Overdue work inside a folded group would otherwise be a line with a number
+   on it. Nothing floats to the top of a column any more, so the header has to
+   carry the warning for what it is hiding. */
+.group-late {
+  flex: none;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
+   Editing a task
+   ---------------------------------------------------------------------------
+   The add form's fields, in the middle of the screen. Wider than the scope
+   dialog next to it because it is a form rather than a question: six controls
+   at 24rem would be six full-width rows and a lot of scrolling on a phone.
+   ------------------------------------------------------------------------ */
+
+.task-dialog {
+  width: min(34rem, 100%);
+  max-height: min(85vh, 44rem);
+  overflow-y: auto;
+  gap: 0.7rem;
+  text-align: left;
+}
+
+.task-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* The title is the heading and the field at once. A label over it would be
+   naming the obvious, and a separate <h2> would say the old title while you
+   typed the new one. */
+.task-dialog-title {
+  flex: 1;
+  font-size: 1rem;
+  font-weight: 500;
+  padding: 0.35rem 0.5rem;
+}
+
+/* Two to a row where both fit, one where they do not — a date and its time
+   are one thought and should not be a scroll apart. */
+.task-dialog-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
-  gap: 0.9rem;
-  align-items: start;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.7rem;
 }
 
-.class-section h2 {
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 0.85rem;
+.task-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.2rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border);
 }
 
-.class-section h2 .link {
-  color: inherit;
-  font: inherit;
-}
-
-.class-section h2 .count {
-  margin-left: auto;
-}
-
-.section-done {
-  display: block;
-  margin: 0.55rem 0 0 0.25rem;
-  font-size: 0.75rem;
-  color: var(--faint);
+/* Delete sits at the far end from Save, which is the whole of the safety here
+   — that and the five seconds of Undo the board gives afterwards. */
+.task-dialog-actions .danger {
+  padding-left: 0;
 }
 
 /* The naming field, in the place the buttons were. */
@@ -3870,12 +3934,6 @@ button.link.danger:hover:not(:disabled) {
   .group-ungroup {
     opacity: 1;
   }
-}
-
-/* Finished work, once the section has been asked for it. */
-.section-finished {
-  margin-top: 0.5rem;
-  opacity: 0.85;
 }
 
 /* ---------------------------------------------------------------------------

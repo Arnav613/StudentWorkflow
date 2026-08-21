@@ -5,6 +5,7 @@ import DatePicker from "./DatePicker";
 import EstimatePicker from "./EstimatePicker";
 import ClassPicker from "./ClassPicker";
 import TimePicker from "./TimePicker";
+import { slotPosition } from "../lib/board";
 import type { DataStore } from "../hooks/useData";
 
 /**
@@ -15,7 +16,7 @@ import type { DataStore } from "../hooks/useData";
  * tasks and they belong to no course.
  */
 export default function TaskForm({ store }: { store: DataStore }) {
-  const { classes, refresh, userId } = store;
+  const { classes, tasks, refresh, userId } = store;
   const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -28,14 +29,19 @@ export default function TaskForm({ store }: { store: DataStore }) {
     e.preventDefault();
     if (!title.trim()) return;
     setBusy(true);
+    const due = dueAtFrom(date, time);
     try {
       await db.createTask({
         user_id: userId,
         title: title.trim(),
         description: description.trim() || null,
-        due_at: dueAtFrom(date, time),
+        due_at: due,
         class_id: classId || null,
         estimate_minutes: estimate,
+        // The board no longer sorts itself, so this is the one moment anything
+        // decides where a task sits: among the work due around the same time,
+        // and after that only a hand moves it. See board.slotPosition.
+        position: slotPosition(tasks, "todo", due),
       });
       toast("Task added", "success");
       setTitle("");

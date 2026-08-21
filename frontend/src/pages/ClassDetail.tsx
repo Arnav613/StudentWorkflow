@@ -52,14 +52,6 @@ export default function ClassDetail({
   aiEnabled: boolean;
   notes: ComponentType<{ store: DataStore; classId?: string }>;
 }) {
-  // A store view scoped to this class. The board component is unchanged and
-  // does not know it is being shown a subset — filtering here rather than
-  // teaching it a classId keeps one board, not two that drift.
-  const scoped: DataStore = {
-    ...store,
-    tasks: store.tasks.filter((t) => t.class_id === cls.id),
-  };
-
   /**
    * Removing a class takes its tasks, notes and links with it — the foreign
    * keys cascade — and for an imported class tells sync never to bring the
@@ -131,7 +123,13 @@ export default function ClassDetail({
         </nav>
       </header>
 
-      {tab === "tasks" && <TaskBoard store={scoped} emptyFor={cls.name} />}
+      {/* The whole store, and a filter — not a pre-filtered store, which is
+          what this used to pass. A column is in hand-chosen order now, and a
+          board that could only see this course's six cards would renumber them
+          over the top of the other thirty-four. See TaskBoard's `classId`. */}
+      {tab === "tasks" && (
+        <TaskBoard store={store} classId={cls.id} emptyFor={cls.name} />
+      )}
 
       {tab === "notes" && (
         <Suspense fallback={<p className="muted">Loading the editor…</p>}>

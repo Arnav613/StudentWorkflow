@@ -1,9 +1,6 @@
-import { useState } from "react";
-import { useDraggable } from "@dnd-kit/core";
-import * as db from "../lib/db";
-import type { Class, Task, TaskStatus } from "../lib/types";
+import { useDraggable, useDroppable } from "@dnd-kit/core";
+import type { Class, Task } from "../lib/types";
 import {
-  COLUMNS,
   daysUntilArchive,
   formatDue,
   formatDueExact,
@@ -11,10 +8,10 @@ import {
   isOverdue,
 } from "../lib/board";
 import { formatEstimate } from "../lib/schedule";
-import { toast, undoable } from "../lib/toast";
-import ChecklistEditor from "./ChecklistEditor";
-import EstimatePicker from "./EstimatePicker";
 import { isSelectClick, type SelectModifiers } from "../hooks/useSelection";
+
+/** Which side of this card a drop would land on, while one is being dragged. */
+export type DropEdge = "before" | "after";
 
 /**
  * One card on the board.
@@ -23,77 +20,51 @@ import { isSelectClick, type SelectModifiers } from "../hooks/useSelection";
  * gesture people expect from a board is picking the card up. That would
  * normally swallow the buttons inside it, so the sensor in TaskBoard only
  * starts a drag after a few pixels of movement; a click stays a click.
+ *
+ * It is also a drop *target*, which it did not used to be. A column no longer
+ * sorts itself, so where in the column a card lands is now a real question
+ * with a real answer, and the only honest way to ask it is against the cards
+ * already there: the line drawn above or below this one is exactly where the
+ * card will be when the pointer is released.
+ *
+ * Everything editable lives in the dialog Open raises. The card used to unfold
+ * a panel in place, which pushed the rest of the column down and left you
+ * editing a field that had just moved.
  */
 export default function TaskCard({
   task,
   cls,
-  userId,
-  onMove,
-  onChanged,
-  onRemove,
+  onOpen,
   onOpenClass,
   selected = false,
   onSelect,
+  dropEdge,
 }: {
   task: Task;
   cls: Class | null;
-  userId: string;
-  onMove: (task: Task, status: TaskStatus) => void;
-  onChanged: () => void;
-  onRemove?: (task: Task) => void;
-  /** Set on the all-classes board, absent inside a class — where it would
+  onOpen: (task: Task) => void;
+  /** Set on the all-tasks board, absent inside a class — where it would
       only ever navigate to the page you are already on. */
   onOpenClass?: (id: string) => void;
   selected?: boolean;
   /** Ctrl or shift came down on this card. Absent where selection is off. */
   onSelect?: (e: SelectModifiers) => void;
+  dropEdge?: DropEdge;
 }) {
-  const [open, setOpen] = useState(false);
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: task.id,
+  });
+  // The same id in both roles, which dnd-kit is happy with and which every
+  // sortable list is built on: the thing you can pick up is the thing you can
+  // drop next to. The data rides along so the board can answer "which column,
+  // which group" from the drop event alone, without a second lookup.
+  const { setNodeRef: setDropRef } = useDroppable({
+    id: task.id,
+    data: { status: task.status, groupId: task.group_id },
   });
 
   const overdue = isOverdue(task);
   const archiveIn = daysUntilArchive(task);
-
-  /**
-   * Change the estimate after the fact.
-   *
-   * The whole point of the control being here as well as on the form: a task
-   * Classroom imported never had one, and the only moment anyone actually
-   * knows how long a reading takes is after opening it. An estimate you could
-   * only set at creation is an estimate nobody corrects.
-   *
-   * Straight to the database and then a refresh, rather than the optimistic
-   * path a drag gets. This is a deliberate one-off choice from a list, not a
-   * direct-manipulation gesture, and a picker that closed on the old value
-   * for 200ms would be less confusing than a card that snapped back.
-   */
-  async function setEstimate(minutes: number | null) {
-    if (minutes === task.estimate_minutes) return;
-    try {
-      await db.updateTask(task.id, { estimate_minutes: minutes });
-      onChanged();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Could not save that estimate", "error");
-    }
-  }
-
-  async function remove() {
-    if (onRemove) return onRemove(task);
-    // Fallback for any caller that has not wired the optimistic path: still
-    // no confirm() box, still undoable, just without the list update.
-    undoable({
-      message: `Deleted "${task.title}"`,
-      apply: () => setOpen(false),
-      commit: async () => {
-        await db.deleteTask(task.id);
-        onChanged();
-      },
-      revert: () => onChanged(),
-      onError: () => toast("The task is still there", "info"),
-    });
-  }
 
   /*
    * A modified click is a selection and stops being anything else.
@@ -112,14 +83,19 @@ export default function TaskCard({
 
   return (
     <li
-      ref={setNodeRef}
+      ref={(node) => {
+        setNodeRef(node);
+        setDropRef(node);
+      }}
       {...listeners}
       {...attributes}
       onPointerDownCapture={onPointerDownCapture}
       aria-selected={onSelect ? selected : undefined}
       className={`card ${cls ? `hue-${cls.color}` : "hue-none"} ${
         isDragging ? "dragging" : ""
-      } ${overdue ? "overdue" : ""}${selected ? " selected" : ""}`}
+      } ${overdue ? "overdue" : ""}${selected ? " selected" : ""}${
+        dropEdge ? ` drop-${dropEdge}` : ""
+      }`}
     >
       <div className="row">
         <span
@@ -127,12 +103,8 @@ export default function TaskCard({
         >
           {task.title}
         </span>
-        <button
-          className="link"
-          onClick={() => setOpen(!open)}
-          aria-expanded={open}
-        >
-          {open ? "Close" : "Open"}
+        <button className="link" onClick={() => onOpen(task)}>
+          Open
         </button>
       </div>
 
@@ -189,47 +161,6 @@ export default function TaskCard({
           </span>
         )}
       </div>
-
-      {open && (
-        <div className="task-detail">
-          {task.description && <p className="small">{task.description}</p>}
-
-          {/* Dragging is the primary gesture; this is how the board stays
-              usable with a keyboard, and on a phone where a long drag across
-              three columns is genuinely awkward. */}
-          <label className="label">
-            Column
-            <select
-              value={task.status}
-              onChange={(e) => onMove(task, e.target.value as TaskStatus)}
-            >
-              {COLUMNS.map((c) => (
-                <option key={c.status} value={c.status}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {/* A div, not a label: the control is a button, and a label
-              wrapping one hijacks its click. */}
-          <div className="detail-field">
-            <span className="label">Takes about</span>
-            <EstimatePicker
-              value={task.estimate_minutes}
-              onChange={(m) => void setEstimate(m)}
-            />
-          </div>
-
-          <ChecklistEditor taskId={task.id} userId={userId} />
-
-          <div className="row end">
-            <button className="link danger" onClick={remove}>
-              Delete task
-            </button>
-          </div>
-        </div>
-      )}
     </li>
   );
 }
