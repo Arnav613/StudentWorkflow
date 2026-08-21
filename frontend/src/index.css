@@ -3305,31 +3305,6 @@ button.link.danger:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-/* ---- The list of them --------------------------------------------------- */
-
-.blackout-list {
-  margin-top: 0.2rem;
-}
-
-.blackout-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.3rem 0;
-}
-
-.blackout-when {
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-/* The reason takes the slack, so Remove sits on the right edge of every row
-   rather than wherever the length of "dentist" happens to put it. */
-.blackout-row > .muted {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
 /* ---- The chat ----------------------------------------------------------- */
 
 .planner-chat .chat-log {

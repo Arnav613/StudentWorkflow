@@ -36,6 +36,7 @@ import {
   planWeek,
   snapUp,
   unscheduled,
+  type BusyInterval,
 } from "../lib/schedule";
 import {
   GRID_START_MIN,
@@ -58,7 +59,6 @@ import {
   type SelectModifiers,
 } from "../hooks/useSelection";
 import RoutinesPanel from "../components/RoutinesPanel";
-import BlackoutsPanel from "../components/BlackoutsPanel";
 import PlannerChat from "../components/PlannerChat";
 import SelectionBar from "../components/SelectionBar";
 import EstimatePicker from "../components/EstimatePicker";
@@ -67,6 +67,7 @@ import ScopeDialog, { type Scope } from "../components/ScopeDialog";
 import TimePicker from "../components/TimePicker";
 import type { DataStore } from "../hooks/useData";
 import type {
+  Blackout,
   Class,
   ClassSession,
   PlanBlock,
@@ -132,6 +133,7 @@ export default function WeekPage({
     refresh,
     setPlanBlocks,
     setTasks,
+    setBlackouts,
     userId,
   } = store;
   const [generating, setGenerating] = useState(false);
@@ -378,10 +380,9 @@ export default function WeekPage({
    * phase 07. Phase 13 adds a second source and no new argument, which is why
    * `planWeek` gained one filter and nothing else.
    */
-  const busy = [
-    ...onBoard.filter((b) => b.google_event_id),
-    ...blackouts,
-  ];
+  function busyFor(outs: Blackout[] = blackouts): BusyInterval[] {
+    return [...onBoard.filter((b) => b.google_event_id), ...outs];
+  }
   /** Lectures you have dropped: they wait in the rail, and cost nothing. */
   const skipped = planBlocks.filter((b) => b.google_event_id && b.dismissed);
 
@@ -520,16 +521,25 @@ export default function WeekPage({
   }
 
   /**
-   * `tasks` is a parameter, and that is not decoration.
+   * Both arguments are here for the same reason, and it is not decoration.
    *
    * Phase 13 replans immediately after another component has written
-   * estimates, splits and deferrals. Those writes land in the database and
-   * then in `store.tasks` — on the next render, which is one render too late
-   * for a callback that is already running. Passing the freshly-read rows in
-   * is the difference between replanning the week you just agreed to and
-   * replanning the one you were arguing about.
+   * estimates, splits, deferrals and blackouts. Those writes land in the
+   * database and then in `store` — on the next render, which is one render too
+   * late for a callback that is already running. Every input this function
+   * reads out of state is therefore an input it can read *stale*, and stale
+   * here does not throw: it plans a perfectly valid week, the one you were
+   * arguing about rather than the one you just agreed to.
+   *
+   * The blackout was the one that got away the first time. Accepting "I am
+   * dead on Wednesday" wrote the row, replanned without it, and then refreshed
+   * — so the band appeared on Wednesday afternoon with the work still sitting
+   * underneath it. Nothing errored. It simply did not move.
    */
-  async function regenerate(rows: Task[] = tasks) {
+  async function regenerate(
+    rows: Task[] = tasks,
+    outs: Blackout[] = blackouts,
+  ) {
     setGenerating(true);
     try {
       // The scheduler takes intervals, not titles. It is given the lectures
@@ -542,7 +552,7 @@ export default function WeekPage({
       const plan = planWeek({
         tasks: rows,
         routines,
-        busy,
+        busy: busyFor(outs),
         locked: onBoard.filter((b) => b.locked && !b.google_event_id),
         routineOverrides,
         from: new Date(),
@@ -1847,12 +1857,11 @@ export default function WeekPage({
       )}
 
       {/*
-        The three things that decide a week, under the week they decide.
+        What decides a week, under the week it decides.
 
-        Order matters here. The chat is first because it is the one that can
-        write the other two, and reading it after seeing the panels it edits
-        makes the panels read as its settings rather than as the plain forms
-        they are and remain.
+        The chat is first because it is the one that can write the other, and
+        reading it after the routines form would make that form read as its
+        settings rather than as the plain thing it is and remains.
       */}
       <PlannerChat
         tasks={tasks}
@@ -1866,22 +1875,17 @@ export default function WeekPage({
         from={planFrom}
         to={addDays(planFrom, DAYS)}
         onApplied={async () => {
-          // Read the tasks back before replanning, and hand them over
-          // explicitly. `refresh()` alone would not do: it sets state this
-          // callback cannot see, and the replan would run against the
-          // estimates as they were before the diff was accepted.
-          const rows = await db.listTasks();
+          // Read both back before replanning, and hand them over explicitly.
+          // `refresh()` alone would not do: it sets state this callback cannot
+          // see, so the replan would run against the week as it was before the
+          // diff was accepted. regenerate() refreshes on its way out.
+          const [rows, outs] = await Promise.all([
+            db.listTasks(),
+            db.listBlackouts(planFrom),
+          ]);
           setTasks(rows);
-          await regenerate(rows);
-          await refresh();
-        }}
-      />
-
-      <BlackoutsPanel
-        blackouts={blackouts}
-        userId={userId}
-        onChange={async () => {
-          await refresh();
+          setBlackouts(outs);
+          await regenerate(rows, outs);
         }}
       />
 

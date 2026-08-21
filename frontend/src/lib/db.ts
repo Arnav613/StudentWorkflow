@@ -590,6 +590,9 @@ export async function deleteRoutine(id: string): Promise<void> {
 // become plan_blocks: the planner reads them as busy and the grid draws them
 // as a band behind everything else, which keeps one row the single answer to
 // "am I out on Wednesday" instead of a row and a block that can disagree.
+//
+// Written only by the planner chat, and only on Accept. There is no hand form
+// for them — see the Week page.
 
 /** Everything from a given instant on. Past blackouts are nobody's business. */
 export async function listBlackouts(from: Date): Promise<Blackout[]> {
@@ -602,15 +605,6 @@ export async function listBlackouts(from: Date): Promise<Blackout[]> {
   );
 }
 
-export async function createBlackout(input: {
-  user_id: string;
-  starts_at: string;
-  ends_at: string;
-  reason?: string | null;
-}): Promise<Blackout> {
-  return unwrap(await supabase.from("blackouts").insert(input).select().single());
-}
-
 export async function createBlackouts(
   rows: {
     user_id: string;
@@ -621,11 +615,6 @@ export async function createBlackouts(
 ): Promise<Blackout[]> {
   if (!rows.length) return [];
   return unwrap(await supabase.from("blackouts").insert(rows).select());
-}
-
-export async function deleteBlackout(id: string): Promise<void> {
-  const { error } = await supabase.from("blackouts").delete().eq("id", id);
-  if (error) throw error;
 }
 
 // ---------------------------------------------------------------------------
