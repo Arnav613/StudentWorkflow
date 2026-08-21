@@ -205,13 +205,6 @@ export default function GradesPanel({
       {draft && (
         <section className="panel">
           <h2>Check what it found</h2>
-          <p className="muted small">
-            Weights are shown exactly as the document stated them, even when
-            they do not add up to a hundred — a rubric that sums to ninety
-            usually means a row was missed, and that is worth seeing rather
-            than having quietly smoothed over. Nothing is saved until Confirm.
-          </p>
-
           <label className="grow">
             <span className="label">Name</span>
             <input
@@ -292,8 +285,7 @@ export default function GradesPanel({
           <div className="empty-state">
             <p className="empty-title">No rubric yet</p>
             <p className="muted small">
-              Upload the grading breakdown and the weights come out of it. Your
-              marks you type in yourself, as they arrive.
+              Upload the grading breakdown to pull the weights in.
             </p>
           </div>
         </section>
@@ -419,8 +411,8 @@ function RubricCard({
 
       {t.ungraded > 0 && (
         <p className="muted small">
-          {t.ungraded} {t.ungraded === 1 ? "component is" : "components are"} still
-          ungraded, and left out of that total rather than counted as zero.
+          {t.ungraded} {t.ungraded === 1 ? "component" : "components"} ungraded, and
+          left out of that total.
         </p>
       )}
 

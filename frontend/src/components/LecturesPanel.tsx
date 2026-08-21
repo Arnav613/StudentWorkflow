@@ -173,11 +173,6 @@ export default function LecturesPanel({
 
       {/* Said plainly, because this is the sentence that explains why the
           timetable below is worth uploading at all. */}
-      <p className="muted small">
-        Linked lectures show this class&rsquo;s colour on the Week grid, and
-        carry the day&rsquo;s topic from the timetable below.
-      </p>
-
       {loading ? (
         <p className="muted small">Reading your calendar…</p>
       ) : failed ? (

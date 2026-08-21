@@ -106,9 +106,9 @@ export default function ProposalsPanel({ store }: { store: DataStore }) {
         </span>
       </h2>
       <p className="muted small">
-        {items.length === 1
-          ? "One possible deadline, from a professor’s post. Nothing is on your board until you accept it."
-          : `${items.length} possible deadlines, from professors’ posts. Nothing is on your board until you accept.`}
+{items.length === 1
+          ? "One possible deadline, from a professor’s post."
+          : `${items.length} possible deadlines, from professors’ posts.`}
       </p>
 
       <ul className="list proposal-list">

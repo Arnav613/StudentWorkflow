@@ -71,24 +71,16 @@ export default function ClassroomPanel({
             <>
               <strong>Reconnect Classroom.</strong>{" "}
               <span className="muted">
-                Google expires this app&rsquo;s permission every seven days
-                while it is unpublished. Your tasks and sign-in are untouched —
-                only new coursework has stopped arriving.
+                Google expires it every seven days. New coursework has stopped
+                arriving; nothing else is affected.
               </span>
             </>
           ) : (
             <>
               <strong>A few more permissions.</strong>{" "}
               <span className="muted">
-                Asked for together, once, because Google issues a permission
-                only at the moment you approve it — four prompts across four
-                months would be four interruptions. The calendar, so the week
-                planner can work around your lectures. Announcements and class
-                materials, so a deadline a professor moved in a post reaches
-                you, and so attached documents land in Docs on their own. And
-                Drive, so those documents can be summarised. Every one is
-                read-only, each can be unticked on the Google screen, and
-                declining any of them costs you that feature and nothing else.
+                Calendar, announcements, class materials and Drive — all
+                read-only, and each can be unticked on the Google screen.
               </span>
             </>
           )}
@@ -102,9 +94,7 @@ export default function ClassroomPanel({
         <>
           {!busy && (
             <p className="muted small">
-              Import your courses and their deadlines. Read-only: this can see
-              your courses and your own assignments, and can never write to
-              Classroom or read anyone else&rsquo;s work.
+              Import your courses and their deadlines. Read-only.
             </p>
           )}
           <div className="row">
@@ -119,8 +109,7 @@ export default function ClassroomPanel({
         <p className="muted">
           {busy}{" "}
           <span className="small">
-            The first request of the day wakes the server and can take up to a
-            minute.
+            The first request of the day can take a minute.
           </span>
         </p>
       )}

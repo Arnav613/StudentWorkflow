@@ -120,9 +120,7 @@ export default function ClassesPage({
         <div className="panel empty-state">
           <p className="empty-title">No classes yet</p>
           <p className="muted">
-            A class is the folder everything else lives in — its tasks, its
-            notes and its links. Add one, or connect Classroom below to import
-            the courses you are enrolled in.
+            Add one, or connect Classroom below to import your courses.
           </p>
         </div>
       ) : (
@@ -289,7 +287,7 @@ function AddClassForm({
             <span className="field-hint muted small">
               {coursesError
                 ? `Couldn’t load courses: ${coursesError}. You can still create the class and link it later by matching names.`
-                : "Linked classes pull in their coursework and deadlines automatically."}
+                : "Linked classes pull in their coursework automatically."}
             </span>
           </label>
         )}

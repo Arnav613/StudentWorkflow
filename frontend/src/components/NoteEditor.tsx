@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PartialBlock } from "@blocknote/core";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/mantine";
-// Inter is loaded once in main.tsx — app-wide, not just inside the editor.
+// The type stack is set once in main.tsx and index.html — app-wide, not just
+// inside the editor.
 import "@blocknote/mantine/style.css";
 import * as notes from "../lib/notes";
 import type { Note } from "../lib/types";

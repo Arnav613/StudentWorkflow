@@ -5,11 +5,12 @@ import App from "./App";
 /*
  * Inter, app-wide and eagerly.
  *
- * It ships with the editor package, so this is a local font with no webfont
- * request and no third-party origin. It used to be imported from NoteEditor,
- * which lives in the lazy chunk — meaning every screen except an open note
- * rendered in the system stack and the whole app visibly changed typeface the
- * first time someone opened their notes.
+ * Geist is the face the app is set in — see index.html — and Inter is now the
+ * layer under it: a local font, bundled with the editor package, that renders
+ * the first frame while Geist is still in flight and covers the case where
+ * the font origin is blocked. It is imported here rather than from NoteEditor
+ * because that file lives in the lazy chunk, and the fallback has to be in
+ * the first paint to be a fallback at all.
  */
 import "@blocknote/core/fonts/inter.css";
 import "./index.css";

@@ -135,10 +135,8 @@ export default function DocumentUpload({
     <section className="panel">
       <h2>Upload a {label}</h2>
       <p className="muted small">
-        A PDF or a photo of the handout, up to 15 MB.{" "}
-        {aiEnabled
-          ? "It is read once and you check what it found before anything is saved."
-          : "Reading it needs AI, which is turned off on this deployment — the file is kept either way."}
+        PDF or photo, up to 15 MB.{" "}
+        {!aiEnabled && "Reading it needs AI, which is off on this deployment."}
       </p>
 
       <div className="doc-row">

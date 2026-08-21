@@ -11,10 +11,9 @@ import {
 /**
  * A class, as a card you open.
  *
- * The colour band is the class's own colour at full strength — the one place
- * in the app where a class colour is allowed to be loud, because this grid is
- * how you find a class, and finding it by colour is faster than reading four
- * names.
+ * A rule of the class's own colour runs across the top — three pixels, not
+ * the block it used to be. Finding a class by colour is faster than reading
+ * four names, and a hairline is enough to do it.
  *
  * Under the name is the single next thing due, not a list. A card that tries
  * to show everything becomes a second board, and the board already exists one

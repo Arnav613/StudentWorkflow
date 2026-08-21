@@ -7,18 +7,21 @@
    ========================================================================= */
 
 :root {
-  --bg: #f4f5f9;
+  /* Neutral greys, no blue cast. A tinted grey scale is the tell that a
+     palette was generated rather than chosen: every surface leans the same
+     way as the accent, and the whole page reads as one wash. */
+  --bg: #f7f7f8;
   --surface: #ffffff;
-  --sunken: #eaebf2;
-  --fg: #1a1a22;
-  --muted: #6b6b7b;
-  --faint: #9a9aab;
-  --border: #e3e4ec;
-  --border-strong: #d0d1dd;
+  --sunken: #f0f0f2;
+  --fg: #18181b;
+  --muted: #6a6a73;
+  --faint: #9b9ba4;
+  --border: #e6e6e9;
+  --border-strong: #d3d3d8;
 
-  --accent: #5b4bdb;
+  --accent: #2b62d9;
   --accent-fg: #ffffff;
-  --accent-soft: #eeecfe;
+  --accent-soft: #eaf0fd;
   --error: #d92d20;
   --error-soft: #fef3f2;
   --ok: #067647;
@@ -35,24 +38,35 @@
   --tint: 10%;
   --tint-strong: 16%;
 
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-lg: 14px;
-  --r-xl: 18px;
+  /* Tight. A 14px radius on a card next to a 6px radius on its buttons is two
+     different products on one screen; the ladder here stays inside 4px. */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 10px;
   --r-pill: 999px;
 
-  --shadow-sm: 0 1px 2px rgb(20 20 40 / 0.06);
-  --shadow-md: 0 1px 3px rgb(20 20 40 / 0.08), 0 4px 12px rgb(20 20 40 / 0.06);
-  --shadow-lg: 0 12px 32px rgb(20 20 40 / 0.16);
+  /*
+   * Depth comes from the surface ladder and a hairline, not from shadow. A
+   * card that casts a real shadow on a page that also has a gradient is two
+   * light sources; these are here only to keep popovers off the page.
+   */
+  --shadow-sm: none;
+  --shadow-md: 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 10px rgb(0 0 0 / 0.05);
+  --shadow-lg: 0 8px 28px rgb(0 0 0 / 0.13);
 
   color-scheme: light dark;
   /*
-   * Inter ships with the editor package already, so the whole app can have a
-   * real typeface without a webfont request or a third-party origin. The
-   * system stack behind it is the fallback, not the plan.
+   * Geist. Inter is the default every generated interface ships with, and it
+   * reads as the absence of a choice; Geist is close enough in metrics to be
+   * a drop-in and different enough to be recognisable. Loaded from Google
+   * Fonts in index.html — the stack behind it is the fallback, not the plan.
    */
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 15px;
+  font-family: Geist, Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* 14px, not 15. Every measurement in this file is in rem, so the base size
+     is the density dial for the whole app, and a tool is read at a glance
+     rather than at arm's length. */
+  font-size: 14px;
   /* Numbers that do not jitter: dates, counts and countdowns all re-render on
      a timer, and proportional digits make them twitch as they change. */
   font-variant-numeric: tabular-nums;
@@ -60,21 +74,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    /* Blue-tinted charcoal rather than black. A true #000 page makes every
-       colour on it look like it is floating, and makes the whole app read as
-       an unstyled terminal. */
-    --bg: #0d0e16;
-    --surface: #171923;
-    --sunken: #12131c;
-    --fg: #f2f2f7;
-    --muted: #a0a1b2;
-    --faint: #6e6f82;
-    --border: #262838;
-    --border-strong: #3a3c50;
+    /* Neutral charcoal. Not black — a true #000 page makes every colour on it
+       look like it is floating — and not blue, which is the accent's job. */
+    --bg: #0e0e11;
+    --surface: #17171a;
+    --sunken: #121215;
+    --fg: #f2f2f4;
+    --muted: #9d9da7;
+    --faint: #6b6b74;
+    --border: #232327;
+    --border-strong: #35353c;
 
-    --accent: #8b7ffb;
-    --accent-fg: #12131c;
-    --accent-soft: #221f3d;
+    --accent: #6c9bff;
+    --accent-fg: #0e0e11;
+    --accent-soft: #16233d;
     --error: #ff6b60;
     --error-soft: #2c1618;
     --ok: #3ddc97;
@@ -85,9 +98,9 @@
     --tint: 18%;
     --tint-strong: 28%;
 
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-    --shadow-md: 0 1px 3px rgb(0 0 0 / 0.5), 0 4px 12px rgb(0 0 0 / 0.35);
-    --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.6);
+    --shadow-sm: none;
+    --shadow-md: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 10px rgb(0 0 0 / 0.4);
+    --shadow-lg: 0 12px 34px rgb(0 0 0 / 0.6);
   }
 }
 
@@ -147,30 +160,34 @@ body {
   -webkit-font-smoothing: antialiased;
 
   /*
-   * One near-neutral wash down from the top, fixed so it does not slide under
-   * a scrolling board. It was two radial washes in indigo and pink, hardcoded
-   * hexes that agreed with neither each other nor --accent: three hues that
-   * nearly match read as template output, which is worse than no gradient at
-   * all. This is the accent itself, at a fraction of the tint that colours a
-   * chip, so the page has a light source without having a colour scheme of
-   * its own.
+   * Flat. The page was washed with a vertical gradient of the accent, which
+   * is the single loudest generated-interface tell: it puts a colour behind
+   * content that has nothing to do with it, and it fights every tinted chip
+   * on top of it. Depth here is the surface ladder — page, panel, sunken —
+   * and one hairline border.
    */
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--accent) calc(var(--tint) * 0.7), transparent),
-      transparent 32rem
-    ),
-    var(--bg);
-  background-attachment: fixed;
+  background: var(--bg);
   min-height: 100dvh;
 }
 
+/*
+ * A short ladder, tightly tracked. Display sizes in a dense tool are a
+ * navigation aid, not a headline — 1.35rem at 600 is the largest thing on
+ * any screen, and negative tracking at that size keeps it from reading as a
+ * marketing page.
+ */
 h1 {
-  font-size: 1.6rem;
+  font-size: 1.35rem;
   font-weight: 600;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
   margin: 0 0 0.15rem;
+}
+
+h2,
+h3 {
+  letter-spacing: -0.01em;
+  line-height: 1.3;
 }
 
 /* Screen-reader-only. Used by the skeletons, which announce one word instead
@@ -201,15 +218,15 @@ button {
   color: var(--accent-fg);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, box-shadow 0.12s,
-    opacity 0.12s, transform 0.08s;
+    opacity 0.12s, filter 0.12s;
 }
 
 button:hover:not(:disabled) {
-  filter: brightness(1.08);
+  filter: brightness(1.06);
 }
 
 button:active:not(:disabled) {
-  transform: translateY(1px);
+  filter: brightness(0.94);
 }
 
 button:disabled {
@@ -306,7 +323,7 @@ input:disabled {
 :where(input, select, textarea, button, a):focus-visible {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 textarea {
@@ -376,6 +393,14 @@ button.link.danger:hover:not(:disabled) {
   margin: 0 0 0.5rem;
 }
 
+/* The sign-in screen is one line and one button on an empty page, so its
+   title is the only thing carrying the app's voice. Larger and tighter than
+   an in-app h1, which sits above a toolbar and has to stay out of the way. */
+.centered h1 {
+  font-size: 1.75rem;
+  letter-spacing: -0.03em;
+}
+
 /* Wider than before. The board wants three columns of real cards and the
    class grid wants three or four tiles; at 76rem both were being squeezed to
    make room for margins nobody reads. */
@@ -443,12 +468,27 @@ button.link.danger:hover:not(:disabled) {
   color: var(--accent);
 }
 
+/* The mark takes its colours from the theme rather than carrying its own, so
+   the ink square inverts in dark instead of turning into a hole. */
+.logo-plate {
+  fill: var(--fg);
+}
+
+.logo-ink {
+  fill: var(--bg);
+}
+
+.logo-stroke {
+  stroke: var(--bg);
+  fill: none;
+}
+
 .logo {
   flex: none;
   display: block;
   border-radius: 6px;
   /* A hairline of the app's own foreground, so the mark keeps an edge on a
-     dark page where its own violet is close to the background. */
+     dark page where its own blue is close to the background. */
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 10%, transparent);
 }
 
@@ -570,7 +610,7 @@ button.link.danger:hover:not(:disabled) {
 .tabs {
   display: flex;
   gap: 0.15rem;
-  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
   border-radius: var(--r-md);
   padding: 0.2rem;
 }
@@ -589,10 +629,13 @@ button.link.danger:hover:not(:disabled) {
   color: var(--fg);
 }
 
+/* The selected tab used to be told apart by a drop shadow. With shadows gone
+   from the flat surfaces, a hairline does the same job without a light
+   source. */
 .tab.current {
   color: var(--fg);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 /* Inside a class the tabs sit on the class's own header, where a segmented
@@ -636,15 +679,12 @@ button.link.danger:hover:not(:disabled) {
   border-radius: 50%;
   font-size: 0.85rem;
   font-weight: 600;
-  /* Derived from --accent rather than a third pair of hardcoded hexes: the
-     avatar sits two centimetres from the page wash and used to be a visibly
-     different indigo. */
-  background: linear-gradient(
-    140deg,
-    var(--accent),
-    color-mix(in srgb, var(--accent) 65%, #ec4899)
-  );
-  color: var(--accent-fg);
+  /* Flat, and the accent's tint rather than the accent itself. A saturated
+     gradient disc is the loudest object on a page whose actual content is
+     grey — and it is a monogram, not a call to action. */
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
   display: grid;
   place-items: center;
 }
@@ -731,32 +771,29 @@ button.link.danger:hover:not(:disabled) {
   transition: box-shadow 0.15s, transform 0.15s, border-color 0.15s;
 }
 
+/* Hover is a border and a ground, not a lift. Cards that rise off the page
+   on pointer-over are the flourish that dates an interface fastest. */
 .class-card:hover:not(:disabled) {
   filter: none;
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
-  border-color: color-mix(in srgb, var(--c) 40%, var(--border));
+  background: color-mix(in srgb, var(--fg) 2%, var(--surface));
+  border-color: var(--border-strong);
 }
 
 .class-card:active:not(:disabled) {
-  transform: translateY(0);
+  background: var(--sunken);
 }
 
+/*
+ * A rule, not a block. This was a 5rem panel of the class's colour at full
+ * strength — eight of them in a grid is a paint chart, and the card's actual
+ * content got the smaller half of its own surface. Three pixels finds the
+ * class just as fast and leaves the card to the words on it.
+ */
 .class-card-band {
   display: block;
-  height: 5rem;
+  height: 3px;
   flex: none;
-  /*
-   * Light-to-deep within the class's own hue. An earlier version mixed every
-   * band toward one violet, which reads as a considered palette on the violet
-   * card and turns amber into brown and teal into slate on the others.
-   */
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--c) 82%, #fff),
-    var(--c) 45%,
-    color-mix(in srgb, var(--c) 72%, #000)
-  );
+  background: var(--c);
 }
 
 .class-card-body {
@@ -877,13 +914,8 @@ button.link.danger:hover:not(:disabled) {
 
 .class-header-band {
   display: block;
-  height: 0.4rem;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--c) 80%, #fff),
-    var(--c) 55%,
-    color-mix(in srgb, var(--c) 75%, #000)
-  );
+  height: 0.2rem;
+  background: var(--c);
 }
 
 .class-header-body {
@@ -942,10 +974,12 @@ button.link.danger:hover:not(:disabled) {
   font-weight: 500;
   line-height: 1.5;
   color: var(--muted);
-  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
   border: none;
-  border-radius: var(--r-pill);
-  padding: 0.1rem 0.55rem;
+  /* Squared, not a pill. A row of lozenges reads as decoration; the same
+     chips at 4px read as metadata, which is what they are. */
+  border-radius: var(--r-sm);
+  padding: 0.1rem 0.4rem;
   white-space: nowrap;
 }
 
@@ -1601,8 +1635,8 @@ button.link.danger:hover:not(:disabled) {
   letter-spacing: 0;
   color: color-mix(in srgb, var(--c) 70%, var(--fg));
   background: color-mix(in srgb, var(--c) var(--tint-strong), transparent);
-  border-radius: var(--r-pill);
-  padding: 0.05rem 0.45rem;
+  border-radius: var(--r-sm);
+  padding: 0.05rem 0.35rem;
 }
 
 /* The drop target lights up, not the card being dragged: while the pointer is
@@ -1642,7 +1676,7 @@ button.link.danger:hover:not(:disabled) {
 }
 
 .list > li.card:hover {
-  box-shadow: var(--shadow-md);
+  background: color-mix(in srgb, var(--fg) 2%, var(--surface));
   border-color: var(--border-strong);
   border-left-color: var(--c, var(--border-strong));
 }
@@ -2245,7 +2279,6 @@ button.link.danger:hover:not(:disabled) {
 
 .bar:hover {
   filter: brightness(1.06);
-  box-shadow: var(--shadow-sm, 0 1px 2px rgb(0 0 0 / 0.12));
 }
 
 .bar:active {
@@ -2793,7 +2826,7 @@ button.link.danger:hover:not(:disabled) {
   padding: 0.5rem 0.65rem;
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-lg);
   animation: selection-in 120ms ease-out;
 }
@@ -2858,7 +2891,7 @@ button.link.danger:hover:not(:disabled) {
      bar jump every time the selection changes. */
   min-width: 8rem;
   max-width: 11rem;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
 }
 
 /*

@@ -75,10 +75,6 @@ export default function RoutinesPanel({ store }: { store: DataStore }) {
     <section className="panel">
       <div className="panel-head">
         <h2>Repeating blocks</h2>
-        <span className="muted small">
-          Added to every day it applies to, straight away. Move or remove any of
-          them on the grid above.
-        </span>
       </div>
 
       <form className="routine-form" onSubmit={add}>

@@ -190,11 +190,6 @@ export default function PlannerChat({
     <section className="panel planner-chat">
       <div className="panel-head">
         <h2>Tell it about your week</h2>
-        <span className="muted small">
-          It changes what the planner is given — estimates, blocked hours, what
-          can wait — and then the ordinary planner runs. Nothing happens until
-          you accept it.
-        </span>
       </div>
 
       {lines.length > 0 && (
@@ -272,10 +267,6 @@ export default function PlannerChat({
         </button>
       </form>
 
-      <p className="muted small">
-        This conversation is not saved. Close the tab and it is gone; only what
-        you accept is written down.
-      </p>
     </section>
   );
 }
