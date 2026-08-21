@@ -495,6 +495,28 @@ export default function WeekPage({
     [planBlocks],
   );
 
+  /**
+   * The unplanned work that is selected, as ids Autoplan can plan.
+   *
+   * Only rail *tasks* count. The selection is one set across the whole page,
+   * so a block on the grid can be in it too — and a grid block is by
+   * definition an hour that has already been found, which is not something
+   * Autoplan has anything to offer. A dropped lecture sitting in the rail is
+   * not work either. Both are passed over rather than refused, so a mixed
+   * selection still plans the part of itself that is plannable.
+   *
+   * Empty means empty: no rail selection is the old behaviour, the whole rail.
+   * Selecting narrows, it is not a precondition for pressing the button.
+   */
+  const chosenUnplanned = useMemo(() => {
+    const ids = new Set<string>();
+    for (const u of outstanding) {
+      if (selection.has(`task:${u.task_id}`)) ids.add(u.task_id);
+    }
+    return ids;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection.selected, outstanding]);
+
   /** The selected plan blocks, in whatever order the set came out. */
   const chosenBlocks = useMemo(
     () =>
@@ -575,15 +597,26 @@ export default function WeekPage({
    * That is why it is safe to press at any moment, and why it now lives on the
    * rail beside the work it is offering to place rather than at the top of the
    * page beside the week it used to overwrite.
+   *
+   * `only` is the rail's selection, when there is one: the ids of the tasks to
+   * find hours for, instead of everything the rail lists. Nothing else about
+   * the run changes — same board, same free hours, same order — so pressing it
+   * with three things selected plans exactly the three you would have got had
+   * the other twelve not been there to plan first.
    */
-  async function fillGaps(rows: Task[] = tasks) {
+  async function fillGaps(rows: Task[] = tasks, only?: Set<string>) {
     setGenerating(true);
     try {
+      // A selection narrows what is offered an hour; it never widens it. The
+      // board, the free windows and the medians are all still the whole
+      // week's — planning three things well means knowing what the other
+      // twelve are already sitting on.
+      const offered = only ? rows.filter((t) => only.has(t.id)) : rows;
       // `from` is now, not planFrom: today's morning is over and nothing can
       // be scheduled into it. The columns still start at midnight so the week
       // reads as a week.
       const plan = autoplan({
-        tasks: rows,
+        tasks: offered,
         // Everything on the board, of every kind — lectures, routines and
         // work alike. A dismissed lecture is excluded upstream, because it is
         // an hour you got back; so is an hour set aside for work that is now
@@ -601,6 +634,10 @@ export default function WeekPage({
 
       await db.addPlanBlocks(userId, plan.blocks);
       await refresh();
+      // Everything just planned has left the rail, so most of the selection
+      // has gone with it. Clearing the remainder matches Unplan and Delete,
+      // which also leave nothing highlighted behind them.
+      if (only) selection.clear();
 
       const placed = plan.blocks.length;
       const lead = placed ? `Planned ${placed}. ` : "";
@@ -1931,10 +1968,23 @@ export default function WeekPage({
           classById={classById}
           selection={selection}
           planning={generating}
-          onAutoplan={() => void fillGaps()}
+          chosen={chosenUnplanned.size}
+          onAutoplan={() =>
+            void fillGaps(
+              tasks,
+              chosenUnplanned.size ? chosenUnplanned : undefined,
+            )
+          }
         />
 
-        <DragOverlay>
+        {/*
+          No drop animation. The default flies the overlay back to the rect the
+          drag started from before the commit re-renders the block in its new
+          cell, which reads as the card drifting home and then jumping. The
+          drop is already drawn by the preview, so the overlay has nothing left
+          to say once the pointer is released.
+        */}
+        <DragOverlay dropAnimation={null}>
           {dragging && (
             <div className="card overlay">
               {selection.count > 1 &&
@@ -2638,10 +2688,13 @@ function UnplannedRail({
   classById,
   selection,
   planning,
+  chosen,
   onAutoplan,
 }: {
   /** True while a plan is being worked out, so the button can say so. */
   planning: boolean;
+  /** How many of the items below are selected. Zero means all of them. */
+  chosen: number;
   /** Find hours for everything in this list that will take one. */
   onAutoplan: () => void;
   outstanding: {
@@ -2683,11 +2736,20 @@ function UnplannedRail({
       */}
       {outstanding.length > 0 && (
         <div className="row rail-actions">
+          {/*
+            The count is on the button rather than only in the sentence beside
+            it, because the narrowing has to be legible in the half-second
+            before the press — "Autoplan 3" is a different promise from
+            "Autoplan", and finding out which one you made from the toast
+            afterwards is finding out too late.
+          */}
           <button onClick={onAutoplan} disabled={planning}>
-            {planning ? "Finding hours…" : "Autoplan"}
+            {planning ? "Finding hours…" : chosen ? `Autoplan ${chosen}` : "Autoplan"}
           </button>
           <span className="muted small">
-            Finds hours for everything below. Nothing already on the grid moves.
+            {chosen
+              ? `Finds hours for the ${chosen} selected. Nothing already on the grid moves.`
+              : "Finds hours for everything below. Nothing already on the grid moves."}
           </span>
         </div>
       )}
