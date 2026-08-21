@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import type { Class, Task } from "../lib/types";
 import {
@@ -9,6 +10,9 @@ import {
 } from "../lib/board";
 import { formatEstimate } from "../lib/schedule";
 import { isSelectClick, type SelectModifiers } from "../hooks/useSelection";
+
+/** A tap or a hold, said in the language `select` already speaks. */
+const TOGGLE: SelectModifiers = { ctrlKey: true, metaKey: false, shiftKey: false };
 
 /** Which side of this card a drop would land on, while one is being dragged. */
 export type DropEdge = "before" | "after";
@@ -38,6 +42,7 @@ export default function TaskCard({
   onOpenClass,
   selected = false,
   onSelect,
+  selecting = false,
   dropEdge,
 }: {
   task: Task;
@@ -49,6 +54,12 @@ export default function TaskCard({
   selected?: boolean;
   /** Ctrl or shift came down on this card. Absent where selection is off. */
   onSelect?: (e: SelectModifiers) => void;
+  /**
+   * Something is already selected, so this board is in selecting mode and a
+   * plain tap toggles rather than doing nothing. Only ever true where
+   * `onSelect` is given.
+   */
+  selecting?: boolean;
   dropEdge?: DropEdge;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -81,6 +92,62 @@ export default function TaskCard({
     onSelect(e);
   }
 
+  /*
+   * The same two gestures, for a hand that has no ctrl and no shift.
+   *
+   * Press and hold turns selecting on and takes this card with it; after that
+   * a plain tap adds or removes one, until the bar is dismissed. This is the
+   * gesture every phone already uses for "pick several of these", and it is
+   * the only one available — there is no modifier to hold on a touchscreen,
+   * which is why selection was simply unreachable there.
+   *
+   * The hold has to be taken away from the drag sensor to be able to mean
+   * this, so a finger drags from the grip instead and a touch anywhere else
+   * on the card is stopped before dnd-kit's own listener sees it. A mouse is
+   * untouched: it still picks the whole card up, because it has modifiers for
+   * the other half.
+   */
+  const hold = useRef<number | null>(null);
+  const held = useRef(false);
+
+  function cancelHold() {
+    if (hold.current !== null) window.clearTimeout(hold.current);
+    hold.current = null;
+  }
+
+  function onTouchStartCapture(e: React.TouchEvent) {
+    if (!onSelect) return;
+    if ((e.target as HTMLElement).closest(".grip")) return; // that one is a drag
+    e.stopPropagation(); // keep the TouchSensor out of it
+
+    held.current = false;
+    cancelHold();
+    hold.current = window.setTimeout(() => {
+      hold.current = null;
+      held.current = true;
+      // A hold that produced a selection should not also feel like nothing
+      // happened; where the device can, it says so.
+      navigator.vibrate?.(10);
+      onSelect(TOGGLE);
+    }, 420);
+  }
+
+  function onTouchEnd(e: React.TouchEvent) {
+    // A button inside the card is still a button while selecting. Open has to
+    // keep opening, or the mode has quietly disabled half the card.
+    if ((e.target as HTMLElement).closest("button, a")) {
+      cancelHold();
+      held.current = false;
+      return;
+    }
+    const wasHold = held.current;
+    held.current = false;
+    cancelHold();
+    // In selecting mode a tap is the selection gesture and nothing else. The
+    // hold that started the mode must not immediately toggle itself back off.
+    if (onSelect && selecting && !wasHold) onSelect(TOGGLE);
+  }
+
   return (
     <li
       ref={(node) => {
@@ -90,6 +157,10 @@ export default function TaskCard({
       {...listeners}
       {...attributes}
       onPointerDownCapture={onPointerDownCapture}
+      onTouchStartCapture={onTouchStartCapture}
+      onTouchMove={cancelHold}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={cancelHold}
       aria-selected={onSelect ? selected : undefined}
       className={`card ${cls ? `hue-${cls.color}` : "hue-none"} ${
         isDragging ? "dragging" : ""
@@ -103,6 +174,10 @@ export default function TaskCard({
         >
           {task.title}
         </span>
+        {/* Only a finger needs this: a mouse drags the card itself. Hidden
+            from the reading order because it is not a control, it is the
+            same drag the card already offers, reachable by touch. */}
+        <span className="grip" aria-hidden="true" title="Drag" />
         <button className="link" onClick={() => onOpen(task)}>
           Open
         </button>

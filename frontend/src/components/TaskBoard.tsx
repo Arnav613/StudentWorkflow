@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   KeyboardSensor,
   closestCenter,
   pointerWithin,
@@ -98,10 +99,28 @@ export default function TaskBoard({
   /** The task whose dialog is open, by id — so an edit elsewhere is picked up. */
   const [editing, setEditing] = useState<string | null>(null);
 
-  // Distance, not delay: a drag must not start on a click aimed at the Open
-  // button, and must not cost a held pause when it is a real drag.
+  /*
+   * A mouse and a finger want opposite activation rules, which is why this is
+   * two sensors rather than one PointerSensor.
+   *
+   * A mouse gets distance: a drag must not start on a click aimed at the Open
+   * button, and must not cost a held pause when it is a real drag.
+   *
+   * A finger cannot get distance, and this is the whole of the bug it fixes:
+   * a touch that moves five pixels on a scrollable column has already been
+   * claimed by the browser as a scroll, and the pointercancel that follows
+   * killed the drag before it began — dragging did nothing at all on a phone.
+   * The fix everyone reaches for first is touch-action: none on the cards,
+   * which trades it for a board you cannot scroll past the third card. So the
+   * gesture is separated in time instead: hold briefly and it is a drag, move
+   * first and it is a scroll. Tolerance is what keeps a hold that trembles
+   * from being read as the scroll it is not.
+   */
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 220, tolerance: 8 },
+    }),
     useSensor(KeyboardSensor),
   );
 
@@ -626,6 +645,7 @@ export default function TaskBoard({
         onOpenClass={onOpenClass}
         selected={selection.has(task.id)}
         onSelect={(e) => selection.select(task.id, e)}
+        selecting={selection.count > 0}
         dropEdge={dropAt?.id === task.id ? dropAt.edge : undefined}
       />
     );

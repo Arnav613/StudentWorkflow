@@ -687,6 +687,10 @@ button.link.danger:hover:not(:disabled) {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
   display: grid;
   place-items: center;
+  /* A disc in a flex bar. Without this the top bar squeezes it out of round
+     the moment the tabs beside it want the space. */
+  flex: none;
+  aspect-ratio: 1;
 }
 
 .menu {
@@ -4023,9 +4027,17 @@ button.link.danger:hover:not(:disabled) {
    * nothing that is already big enough moves.
    */
   .tab,
-  .menu-item,
-  .avatar {
+  .menu-item {
     min-height: 44px;
+  }
+
+  /* The avatar is a disc, so the floor has to be applied to both axes at
+     once: a min-height alone against a fixed 2.1rem width made it an
+     ellipse with a stretched letter in it. */
+  .avatar {
+    width: 44px;
+    height: 44px;
+    font-size: 0.95rem;
   }
 
   .tab {
@@ -4090,4 +4102,41 @@ button.link.danger:hover:not(:disabled) {
 .menu-item.subtle {
   color: var(--muted);
   font-weight: 400;
+}
+
+/* ---------------------------------------------------------------------------
+   A grip, for a hand with no modifiers
+   ---------------------------------------------------------------------------
+   Press-and-hold on a card means "start selecting" on a touchscreen, which is
+   the gesture a phone has instead of ctrl-click. That leaves a finger with no
+   way to pick a card up, so it gets a grip and a mouse never sees one — a
+   mouse drags the whole card and has the modifiers for the other half.
+   ------------------------------------------------------------------------ */
+
+.grip {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .grip {
+    display: block;
+    flex: none;
+    align-self: flex-start;
+    width: 1.1rem;
+    height: 1.5rem;
+    margin: -0.1rem -0.35rem 0 0;
+    cursor: grab;
+    /* The drag surface is the one place a finger must not scroll from. */
+    touch-action: none;
+    /* Two rules of dots, drawn rather than shipped as an asset. */
+    background-image: radial-gradient(
+      circle at center,
+      var(--faint) 1px,
+      transparent 1px
+    );
+    background-size: 0.35rem 0.35rem;
+    background-position: center;
+    background-repeat: repeat;
+    opacity: 0.55;
+  }
 }
