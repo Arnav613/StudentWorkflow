@@ -115,6 +115,11 @@ export default function TaskCard({
    * There is nothing on a card a long press should offer anyway.
    */
   function onTouchStart(e: React.TouchEvent) {
+    // Hand it on first. `listeners` is spread onto the same element above,
+    // and a prop written after a spread replaces what the spread put there —
+    // so forgetting this line silently unhooks the touch sensor's only
+    // activator and the card cannot be picked up at all.
+    listeners?.onTouchStart?.(e);
     const t = e.touches[0];
     moved.current = false;
     began.current = Date.now();
@@ -122,6 +127,7 @@ export default function TaskCard({
   }
 
   function onTouchMove(e: React.TouchEvent) {
+    listeners?.onTouchMove?.(e);
     const t = e.touches[0];
     const a = from.current;
     if (!t || !a) return;
@@ -131,6 +137,7 @@ export default function TaskCard({
   }
 
   function onTouchEnd(e: React.TouchEvent) {
+    listeners?.onTouchEnd?.(e);
     const still = !moved.current;
     moved.current = false;
     // A button inside the card is still a button while selecting. Open has to
