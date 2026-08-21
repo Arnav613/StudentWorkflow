@@ -35,8 +35,8 @@ export default function TodoPage({
           renders nothing at all on every other day. */}
       <ProposalsPanel store={store} />
 
-      <TaskForm store={store} />
       <TaskBoard store={store} onOpenClass={onOpenClass} />
+      <TaskForm store={store} />
     </div>
   );
 }

@@ -611,7 +611,7 @@ button.link.danger:hover:not(:disabled) {
   display: flex;
   gap: 0.15rem;
   background: color-mix(in srgb, var(--fg) 5%, transparent);
-  border-radius: var(--r-md);
+  border-radius: 999px;
   padding: 0.2rem;
 }
 
@@ -619,9 +619,9 @@ button.link.danger:hover:not(:disabled) {
   background: none;
   color: var(--muted);
   border-color: transparent;
-  padding: 0.3rem 0.85rem;
+  padding: 0.3rem 0.95rem;
   font-size: 0.9rem;
-  border-radius: calc(var(--r-md) - 4px);
+  border-radius: 999px;
 }
 
 .tab:hover:not(:disabled) {
@@ -745,7 +745,7 @@ button.link.danger:hover:not(:disabled) {
 
 .class-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
   gap: 1.1rem;
 }
 
@@ -2258,7 +2258,9 @@ button.link.danger:hover:not(:disabled) {
   box-sizing: border-box;
   overflow: hidden;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   padding: 0.2rem 0.35rem;
   /* A hairline between neighbours so two touching blocks read as two. The
      width is set inline as a fraction of the column, so the inset comes off
@@ -2329,10 +2331,45 @@ button.link.danger:hover:not(:disabled) {
   --c: #059669;
 }
 
-/* A locked block is the one thing Replan will not touch. A heavier left edge
-   in the accent is the whole of how that is said. */
+/* A block you placed yourself, rather than one Autoplan found an hour for. A
+   heavier left edge in the accent is the whole of how that is said. */
 .bar.locked {
   border-left-width: 5px;
+}
+
+/*
+ * An hour set aside for work that was already due when it starts.
+ *
+ * The edge does the work — it is the one thing legible at a glance down a
+ * dense column, and it deliberately overrides the class colour there and only
+ * there, because "this is late" outranks "this is History" on a bar you are
+ * scanning past. The word beside the title is what disambiguates it; the two
+ * are a pair and neither is decoration.
+ *
+ * Not applied to lectures or routines: neither has a deadline, so neither can
+ * be late for one.
+ */
+.bar.late {
+  border-left-color: var(--error);
+  border-left-width: 5px;
+}
+
+.bar-late {
+  flex: none;
+  /* Beside the title rather than pushed to the far edge, because the bar
+     centres its contents — an auto margin here would drag the name off-centre
+     on exactly the blocks that most want reading carefully. */
+  margin-left: 0.3rem;
+  padding: 0 0.25rem;
+  border-radius: 0.2rem;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 1.5;
+  color: #fff;
+  background: var(--error);
+  white-space: nowrap;
 }
 
 /* An hour that has gone by. Dimmed rather than hidden: the column would
@@ -2570,6 +2607,21 @@ button.link.danger:hover:not(:disabled) {
 
 /* ---- The unplanned rail, as a place to drop things ---------------------- */
 
+/*
+ * Autoplan, and the sentence that says what it will not do.
+ *
+ * The sentence is not filler. The button this replaced sat at the top of the
+ * page and rewrote the week; people learned to be careful with it. This one
+ * only ever adds, and there is no way to discover that by looking at it — so
+ * it is written down, next to the button, permanently.
+ */
+.rail-actions {
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
 .unplanned-rail {
   transition: border-color 120ms ease, background-color 120ms ease;
 }
@@ -2702,7 +2754,7 @@ button.link.danger:hover:not(:disabled) {
  */
 @media (min-width: 92rem) {
   .week-scroll {
-    --wide: min(116rem, calc(100vw - 4rem));
+    --wide: min(106rem, calc(100vw - 4rem));
     width: var(--wide);
     margin-inline: calc((84rem - var(--wide)) / 2);
   }
@@ -3298,45 +3350,8 @@ button.link.danger:hover:not(:disabled) {
 }
 
 /* ===========================================================================
-   Blacked-out hours, and the planner you can argue with — phase 13
+   The planner you can argue with — phase 13
    ========================================================================= */
-
-/*
- * An absence on the chart.
- *
- * Hatched rather than filled, and behind everything: a solid band would read
- * as another block on a grid where every solid bar is something you are doing,
- * and Wednesday afternoon is the opposite of that. No pointer events either —
- * there is nothing to click, and swallowing a drop would make an hour
- * unplannable even after the blackout came off.
- */
-.blackout-band {
-  position: absolute;
-  left: 0;
-  right: 0;
-  z-index: 1;
-  pointer-events: none;
-  overflow: hidden;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  padding: 0.15rem 0.3rem;
-  border-top: 1px solid color-mix(in srgb, var(--fg) 22%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--fg) 22%, transparent);
-  background: repeating-linear-gradient(
-    -45deg,
-    color-mix(in srgb, var(--fg) 9%, transparent) 0 4px,
-    transparent 4px 9px
-  );
-}
-
-.blackout-band > span {
-  font-size: 0.65rem;
-  font-weight: 500;
-  line-height: 1;
-  color: var(--faint);
-  white-space: nowrap;
-}
 
 /* ---- The chat ----------------------------------------------------------- */
 

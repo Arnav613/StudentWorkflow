@@ -270,10 +270,11 @@ async def extract(
 # edits, not the conversation, not a proposals row.
 #
 # The edits are applied by the browser, on Accept, through the same
-# RLS-protected Supabase writes every other change in this app goes through,
-# and then `planWeek` runs there and produces the blocks. That is the phase 13
-# rule in one sentence: the model changes the inputs, the ordinary planner
-# makes the output.
+# RLS-protected Supabase writes every other change in this app goes through —
+# `updateTask`, `moveBlock`, `deleteBlock`, `createTaskBlock`. Every one of
+# them is a function the interface already calls when a person does the same
+# thing by hand. That is the rule in one sentence: the model proposes what a
+# person could have done, and the ordinary write path does it.
 #
 # The week is assembled here rather than accepted from the request, because a
 # request that carried its own task list would be a request that could carry
@@ -311,14 +312,15 @@ class PlanEditOut(BaseModel):
     kind: str
     why: str
     task_id: str | None = None
+    block_id: str | None = None
+    routine_id: str | None = None
+    title: str | None = None
+    weekday: int | None = None
+    time_of_day: str | None = None
+    on_date: str | None = None
     minutes: int | None = None
     starts_at: str | None = None
     ends_at: str | None = None
-    reason: str | None = None
-    until: str | None = None
-    keep_minutes: int | None = None
-    rest_title: str | None = None
-    rest_minutes: int | None = None
 
 
 class PlanResponse(BaseModel):
@@ -365,32 +367,64 @@ async def plan(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "That week runs backwards")
 
     # Service role bypasses RLS, so every read below carries the user filter
-    # itself. This is also the only list of task ids the model will be allowed
-    # to name — see `_clean_edits`.
+    # itself. These are also the only ids the model will be allowed to name —
+    # see `_clean_edits`.
     tasks = await db.select("tasks", user_id=db.eq(user.id), status="neq.done")
     classes = await db.select("classes", user_id=db.eq(user.id))
     routines = await db.select("routines", user_id=db.eq(user.id), active="is.true")
-    blackouts = await db.select("blackouts", user_id=db.eq(user.id))
     blocks = await db.select("plan_blocks", user_id=db.eq(user.id))
 
     class_names = {c["id"]: c.get("name") or "" for c in classes}
+    titles = {t["id"]: (t.get("title") or "") for t in tasks}
+    routine_names = {r["id"]: (r.get("title") or "Routine") for r in routines}
 
     # Minutes already set aside, per task, inside the horizon. The model needs
     # this to tell "unestimated" from "estimated and already handled".
     planned: dict[str, int] = {}
+    # The grid itself, which is what the model now edits rather than merely
+    # plans around. A block outside the horizon is neither.
+    week_blocks: list[ai.PlanBlock] = []
+
     for b in blocks:
         task_id = b.get("task_id")
-        if not task_id:
-            continue
         try:
             start = datetime.fromisoformat(b["starts_at"].replace("Z", "+00:00"))
             end = datetime.fromisoformat(b["ends_at"].replace("Z", "+00:00"))
-        except (KeyError, ValueError):
+        except (KeyError, AttributeError, ValueError):
             continue
         if end <= begins or start >= ends:
             continue
-        planned[task_id] = planned.get(task_id, 0) + int(
-            (end - start).total_seconds() // 60
+        if b.get("dismissed"):
+            # Off the board by the student's own decision. It occupies no time
+            # and is not there to be moved.
+            continue
+
+        if task_id:
+            planned[task_id] = planned.get(task_id, 0) + int(
+                (end - start).total_seconds() // 60
+            )
+
+        week_blocks.append(
+            ai.PlanBlock(
+                id=b["id"],
+                label=(
+                    titles.get(task_id or "")
+                    or b.get("title")
+                    or routine_names.get(b.get("routine_id") or "")
+                    or "Busy"
+                ),
+                task_id=task_id,
+                starts_at=b["starts_at"],
+                ends_at=b["ends_at"],
+                # A work session is the student's to drag, so it is the
+                # model's to propose dragging. A mirrored lecture and a
+                # routine occurrence are not: one belongs to Google and the
+                # other to a rule, and moving either from here would be the
+                # model editing something the student cannot edit back.
+                movable=bool(task_id)
+                and not b.get("google_event_id")
+                and not b.get("routine_id"),
+            )
         )
 
     live = [t for t in tasks if not t.get("archived_at")]
@@ -399,31 +433,39 @@ async def plan(
             id=t["id"],
             title=t.get("title") or "",
             class_name=class_names.get(t.get("class_id"), ""),
-            due_on=(t.get("due_at") or "")[:10] or None,
+            due_at=t.get("due_at"),
             estimate_minutes=t.get("estimate_minutes"),
             planned_minutes=planned.get(t["id"], 0),
-            deferred_until=t.get("plan_skip_until"),
         )
         for t in live
     ]
 
     owned = {t["id"] for t in live}
-    titles = {t["id"]: (t.get("title") or "") for t in live}
+    known = {t.id for t in week_tasks}
 
     return await _answer(
         tasks=week_tasks,
-        routines=[
-            f"{r.get('title') or 'Routine'} — "
-            f"{'every day' if r.get('weekday') is None else _WEEKDAYS[int(r['weekday'])]}"
-            f" at {str(r.get('time_of_day') or '')[:5]} for "
-            f"{r.get('duration_minutes')} minutes"
-            for r in routines
+        # Only blocks whose task is still live can be named in an edit, so a
+        # block belonging to a finished or archived task is dropped rather
+        # than offered as something to move.
+        blocks=[
+            b for b in week_blocks if not b.task_id or b.task_id in known or not b.movable
         ],
-        blackouts=[
-            f"{b['starts_at']} to {b['ends_at']}"
-            + (f" ({b['reason']})" if b.get("reason") else "")
-            for b in blackouts
-            if b.get("starts_at") and b.get("ends_at")
+        # Structured now, not a sentence. The model may edit these, so it
+        # needs the id it will have to name and the weekday it will have to
+        # send back — and a prose line it had to parse to find either would be
+        # the one place in this file where an id survives a round trip through
+        # English.
+        routines=[
+            ai.PlanRoutine(
+                id=r["id"],
+                title=r.get("title") or "Routine",
+                weekday=None if r.get("weekday") is None else int(r["weekday"]),
+                time_of_day=str(r.get("time_of_day") or "")[:5],
+                duration_minutes=int(r.get("duration_minutes") or 0),
+            )
+            for r in routines
+            if r.get("time_of_day")
         ],
         unplaced=[
             f"{titles[u.task_id]} — {u.minutes} minutes with no hour against it"
@@ -433,17 +475,6 @@ async def plan(
         horizon=(body.from_at, body.to_at),
         turns=turns,
     )
-
-
-_WEEKDAYS = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-]
 
 
 async def _answer(**kwargs: object) -> PlanResponse:
@@ -467,14 +498,15 @@ async def _answer(**kwargs: object) -> PlanResponse:
                 kind=e.kind,
                 why=e.why,
                 task_id=e.task_id,
+                block_id=e.block_id,
+                routine_id=e.routine_id,
+                title=e.title,
+                weekday=e.weekday,
+                time_of_day=e.time_of_day,
+                on_date=e.on_date,
                 minutes=e.minutes,
                 starts_at=e.starts_at,
                 ends_at=e.ends_at,
-                reason=e.reason,
-                until=e.until,
-                keep_minutes=e.keep_minutes,
-                rest_title=e.rest_title,
-                rest_minutes=e.rest_minutes,
             )
             for e in advice.edits
         ],

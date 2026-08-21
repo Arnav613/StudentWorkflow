@@ -1,0 +1,59 @@
+-- 0013_agent_does_what_you_can.sql — undoing most of 0012, on purpose.
+--
+-- Migration 0012 gave the planner agent two pieces of state of its own: a
+-- `blackouts` table and a `tasks.plan_skip_until` column. Both were sound
+-- ideas and both are removed here, for the same reason.
+--
+-- The agent was built on a rule — *the model changes the planner's inputs,
+-- never its output* — which kept it from ever putting a block on the grid.
+-- That rule is a good defence against a second, unaccountable scheduler, and
+-- it had a cost nobody priced at the time: to be useful under it, the model
+-- needed inputs expressive enough to shape a week with. So it was given four
+-- powers. Three of them existed nowhere else in the application.
+--
+--   * Nothing but the chat could create a blackout.
+--   * Nothing but the chat could set `plan_skip_until`. (You could clear one;
+--     you could not write one.)
+--   * Nothing but the chat could split a task in two.
+--
+-- The result was a model that was the sole author of part of your week. The
+-- only way to argue with a deferral was to ask the model to take it back —
+-- a chat window as the exclusive interface to a feature, which is exactly
+-- the failure the approve-a-diff design was meant to prevent.
+--
+-- The rule is now the other way round, and it is simpler: **the agent may do
+-- what you can do, and nothing else.** It sets estimates, moves blocks,
+-- unplans them, and places unplanned work — every one of those a thing you
+-- can do with a drag, and therefore a thing you can undo with a drag. Nothing
+-- it writes is beyond your reach.
+--
+-- That leaves these two objects with no author and no reader. A column that
+-- nothing can set is not a feature waiting for a UI; it is a field that will
+-- be quietly wrong the first time somebody writes a query against it. They
+-- go.
+--
+-- Blackouts specifically are worth a note for anyone reading this later. The
+-- *idea* is good — an hour that is neither work nor a routine is a real thing
+-- and the planner should know about it. If it comes back, it should come back
+-- as something you can enter, see and delete yourself, and the agent should
+-- get access to it the same way it gets access to everything else now: by
+-- proposing what you could have done by hand.
+
+-- ---------------------------------------------------------------------------
+-- The table only the chat could write to
+-- ---------------------------------------------------------------------------
+--
+-- Dropped rather than emptied. An empty table with an RLS policy on it is an
+-- invitation to write to it, and there is no longer anything that should.
+drop table if exists blackouts;
+
+-- ---------------------------------------------------------------------------
+-- The column only the chat could set
+-- ---------------------------------------------------------------------------
+--
+-- Deadlines are untouched. `plan_skip_until` was never a deadline and never
+-- moved one; dropping it takes away only the instruction "no hours before
+-- this date", which nothing is left to issue. Any task carrying one simply
+-- becomes plannable again — which, since Autoplan does not run unless you
+-- press it, changes nothing about anybody's week until they ask it to.
+alter table tasks drop column if exists plan_skip_until;

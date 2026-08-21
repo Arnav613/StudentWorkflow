@@ -33,10 +33,9 @@ import {
   isoDate,
   logicalDayOf,
   planDays,
-  planWeek,
+  autoplan,
   snapUp,
   unscheduled,
-  type BusyInterval,
 } from "../lib/schedule";
 import {
   GRID_START_MIN,
@@ -67,7 +66,6 @@ import ScopeDialog, { type Scope } from "../components/ScopeDialog";
 import TimePicker from "../components/TimePicker";
 import type { DataStore } from "../hooks/useData";
 import type {
-  Blackout,
   Class,
   ClassSession,
   PlanBlock,
@@ -128,12 +126,10 @@ export default function WeekPage({
     routineOverrides,
     routineSkips,
     planBlocks,
-    blackouts,
     planFrom,
     refresh,
     setPlanBlocks,
     setTasks,
-    setBlackouts,
     userId,
   } = store;
   const [generating, setGenerating] = useState(false);
@@ -370,46 +366,8 @@ export default function WeekPage({
     );
   }, [laid, preview]);
 
-  /**
-   * Hours the planner may not use: lectures you have not dropped, and the
-   * afternoons you have said are gone.
-   *
-   * One list, because the scheduler does not need to know the difference. A
-   * blackout and a lecture are the same fact to it — an interval that is
-   * already spent — and `commitments` has taken exactly that shape since
-   * phase 07. Phase 13 adds a second source and no new argument, which is why
-   * `planWeek` gained one filter and nothing else.
-   */
-  function busyFor(outs: Blackout[] = blackouts): BusyInterval[] {
-    return [...onBoard.filter((b) => b.google_event_id), ...outs];
-  }
   /** Lectures you have dropped: they wait in the rail, and cost nothing. */
   const skipped = planBlocks.filter((b) => b.google_event_id && b.dismissed);
-
-  /**
-   * Blackouts as bands, by column.
-   *
-   * Drawn rather than left to the arithmetic, because a planner that quietly
-   * refused to use Wednesday afternoon and showed nothing for it would look
-   * broken. They are not blocks and never become rows in `plan_blocks`: a
-   * block can be dragged, resized and locked, and none of those is a sensible
-   * thing to do to an absence. So they sit behind everything, take no
-   * pointer, and are removed from the panel below.
-   */
-  const blackoutBands = useMemo(() => {
-    const byColumn = byDay(blackouts, days);
-    return days.map((day, i) =>
-      byColumn[i]
-        .map((b) => ({
-          id: b.id,
-          label: b.reason ?? "Blocked",
-          startMin: Math.max(GRID_START_MIN, minutesFrom(day, b.starts_at)),
-          endMin: minutesFrom(day, b.ends_at),
-        }))
-        .filter((b) => b.endMin > b.startMin),
-    );
-    // days is derived from planFrom, and blackouts is the real dependency.
-  }, [days, blackouts]);
 
   const outstanding = unscheduled(tasks, onBoard, medians)
     .map((u) => ({ ...u, task: taskById.get(u.task_id) }))
@@ -521,82 +479,75 @@ export default function WeekPage({
   }
 
   /**
-   * Both arguments are here for the same reason, and it is not decoration.
+   * Find hours for the work that has none.
    *
-   * Phase 13 replans immediately after another component has written
-   * estimates, splits, deferrals and blackouts. Those writes land in the
-   * database and then in `store` — on the next render, which is one render too
-   * late for a callback that is already running. Every input this function
-   * reads out of state is therefore an input it can read *stale*, and stale
-   * here does not throw: it plans a perfectly valid week, the one you were
-   * arguing about rather than the one you just agreed to.
+   * `rows` is here for the same reason it always was, and it is not
+   * decoration. The planner chat writes estimates and then asks for a plan in
+   * the same callback; those writes land in the database and then in `store` —
+   * on the next render, which is one render too late for a callback already
+   * running. Every input this function reads out of state is therefore one it
+   * can read *stale*, and stale here does not throw: it plans a perfectly
+   * valid week, the one you were arguing about rather than the one you just
+   * agreed to.
    *
-   * The blackout was the one that got away the first time. Accepting "I am
-   * dead on Wednesday" wrote the row, replanned without it, and then refreshed
-   * — so the band appeared on Wednesday afternoon with the work still sitting
-   * underneath it. Nothing errored. It simply did not move.
+   * What changed is what the press *does*. This used to be Replan: delete
+   * every block the planner had made, generate the week again from scratch,
+   * write the lot back. One press could rearrange sessions you had read and
+   * half worked through, and the only thing standing in its way was `locked` —
+   * a flag set as an invisible side effect of dragging.
+   *
+   * Autoplan only adds. The board as it stands is handed in as time already
+   * spoken for, the gaps that are left are filled with work the rail says has
+   * no hour against it, and nothing already on the grid is moved or deleted.
+   * That is why it is safe to press at any moment, and why it now lives on the
+   * rail beside the work it is offering to place rather than at the top of the
+   * page beside the week it used to overwrite.
    */
-  async function regenerate(
-    rows: Task[] = tasks,
-    outs: Blackout[] = blackouts,
-  ) {
+  async function fillGaps(rows: Task[] = tasks) {
     setGenerating(true);
     try {
-      // The scheduler takes intervals, not titles. It is given the lectures
-      // because they are the same shape; it has no idea what any of them are,
-      // and that is the correct amount for a scheduler to know.
-      //
       // `from` is now, not planFrom: today's morning is over and nothing can
       // be scheduled into it. The columns still start at midnight so the week
       // reads as a week.
-      const plan = planWeek({
+      const plan = autoplan({
         tasks: rows,
-        routines,
-        busy: busyFor(outs),
-        locked: onBoard.filter((b) => b.locked && !b.google_event_id),
-        routineOverrides,
+        // Everything on the board, of every kind — lectures, routines and
+        // work alike. A dismissed lecture is excluded upstream, because it is
+        // an hour you got back.
+        placed: onBoard,
         from: new Date(),
         days: DAYS,
         medians: rows === tasks ? medians : classMedians(rows),
       });
 
-      await db.replacePlan(userId, new Date(), plan.blocks);
+      if (!plan.blocks.length && !plan.unplaced.length) {
+        toast("Everything already has an hour against it", "info");
+        return;
+      }
+
+      await db.addPlanBlocks(userId, plan.blocks);
       await refresh();
 
+      const placed = plan.blocks.length;
+      const lead = placed ? `Planned ${placed}. ` : "";
       if (plan.unplaced.length) {
         const beyond = plan.unplaced.filter((u) => u.reason === "deadline").length;
         toast(
           beyond
-            ? `Planned. ${beyond} thing${beyond === 1 ? "" : "s"} cannot fit before ${beyond === 1 ? "its" : "their"} deadline.`
-            : `Planned. ${plan.unplaced.length} thing${plan.unplaced.length === 1 ? "" : "s"} did not fit your hours this week.`,
+            ? `${lead}${beyond} thing${beyond === 1 ? "" : "s"} cannot fit before ${beyond === 1 ? "its" : "their"} deadline.`
+            : `${lead}${plan.unplaced.length} thing${plan.unplaced.length === 1 ? "" : "s"} did not fit your free hours.`,
           "info",
         );
       } else {
-        toast("Week planned", "success");
+        toast(
+          placed === 1 ? "One thing planned" : `${placed} things planned`,
+          "success",
+        );
       }
     } catch (e) {
-      toast(errorText(e, "Could not plan the week"), "error");
+      toast(errorText(e, "Could not plan that"), "error");
     } finally {
       setGenerating(false);
-    }
-  }
-
-  /**
-   * "Actually, do it this week."
-   *
-   * One field back to null and a replan. Deliberately not a dialog: deferring
-   * is the decision that needs thinking about, and undoing one is the cheapest
-   * thing on this screen.
-   */
-  async function undefer(task: Task) {
-    try {
-      const saved = await db.setPlanSkip(task.id, null);
-      const rows = tasks.map((t) => (t.id === saved.id ? saved : t));
-      setTasks(rows);
-      await regenerate(rows);
-      toast(`${task.title} is back in this week`, "success");
-    } catch (e) {
-      toast(errorText(e, "Could not bring that back"), "error");
     }
   }
 
@@ -1604,7 +1555,7 @@ export default function WeekPage({
           <p className="muted small">
             {plannedMinutes
               ? `${formatMinutes(plannedMinutes)} of work planned across the next seven days`
-              : "No plan yet. Press Plan the week and the deadlines below get hours."}
+              : "Nothing planned yet. Autoplan, at the foot of the Unplanned list, finds hours for it."}
           </p>
         </div>
         <div className="row week-actions">
@@ -1621,13 +1572,6 @@ export default function WeekPage({
               {resyncing ? "Syncing…" : "Resync calendar"}
             </button>
           )}
-          <button onClick={() => void regenerate()} disabled={generating}>
-            {generating
-              ? "Planning…"
-              : onBoard.some((b) => b.task_id)
-                ? "Replan"
-                : "Plan the week"}
-          </button>
         </div>
       </div>
 
@@ -1709,7 +1653,6 @@ export default function WeekPage({
                     ? { startMin: preview.startMin, minutes: preview.minutes }
                     : null
                 }
-                blackouts={blackoutBands[i]}
               >
                 {shown[i].map((p) => (
                   <BlockBar
@@ -1773,7 +1716,8 @@ export default function WeekPage({
           classById={classById}
           missed={missed}
           selection={selection}
-          onUndefer={(t) => void undefer(t)}
+          planning={generating}
+          onAutoplan={() => void fillGaps()}
         />
 
         <DragOverlay>
@@ -1865,28 +1809,28 @@ export default function WeekPage({
       */}
       <PlannerChat
         tasks={tasks}
+        routines={routines}
+        routineOverrides={routineOverrides}
+        routineSkips={routineSkips}
         userId={userId}
-        /* Work you have already said can wait is left out. It has no hour
-           against it *on purpose*, and reporting it as a problem would invite
-           an answer that defers it again. */
-        unplaced={outstanding
-          .filter((u) => !u.deferred)
-          .map((u) => ({ task_id: u.task_id, minutes: u.minutes }))}
+        /* The rail as the model should see it: what has no hour against it. */
+        unplaced={outstanding.map((u) => ({
+          task_id: u.task_id,
+          minutes: u.minutes,
+        }))}
         from={planFrom}
         to={addDays(planFrom, DAYS)}
-        onApplied={async () => {
-          // Read both back before replanning, and hand them over explicitly.
-          // `refresh()` alone would not do: it sets state this callback cannot
-          // see, so the replan would run against the week as it was before the
-          // diff was accepted. regenerate() refreshes on its way out.
-          const [rows, outs] = await Promise.all([
-            db.listTasks(),
-            db.listBlackouts(planFrom),
-          ]);
-          setTasks(rows);
-          setBlackouts(outs);
-          await regenerate(rows, outs);
-        }}
+        /*
+         * Reload, and stop there.
+         *
+         * There is deliberately no plan run here any more. The diff was a list
+         * of block-level changes and they have already been written; running
+         * the planner on top would move things the person was never shown,
+         * which is precisely what accepting a diff is supposed to rule out. If
+         * the changes leave work with no hour against it, the rail says so and
+         * Autoplan is one press away — but that press is theirs.
+         */
+        onApplied={refresh}
       />
 
       <RoutinesPanel store={store} />
@@ -1944,7 +1888,6 @@ function DayColumn({
   span,
   register,
   ghost,
-  blackouts,
   children,
 }: {
   day: Date;
@@ -1955,8 +1898,6 @@ function DayColumn({
   register: (el: HTMLElement | null) => void;
   /** Where the thing in the air would land, or null if it is elsewhere. */
   ghost: { startMin: number; minutes: number } | null;
-  /** Hours this day has lost. Behind everything, and not droppable. */
-  blackouts: { id: string; label: string; startMin: number; endMin: number }[];
   children: React.ReactNode;
 }) {
   const today = isToday(day);
@@ -1986,25 +1927,6 @@ function DayColumn({
             aria-hidden="true"
             style={{ bottom: `${((m.min - GRID_START_MIN) / span) * 100}%` }}
           />
-        ))}
-
-        {/* An absence, drawn. Behind the rules and behind every block, with
-            no pointer of its own: there is nothing to click here, and a band
-            that swallowed a drop would make Wednesday afternoon impossible to
-            plan into even after the blackout was removed. */}
-        {blackouts.map((b) => (
-          <div
-            key={b.id}
-            className="blackout-band"
-            title={b.label}
-            aria-hidden="true"
-            style={{
-              bottom: `${((b.startMin - GRID_START_MIN) / span) * 100}%`,
-              height: `${((b.endMin - b.startMin) / span) * 100}%`,
-            }}
-          >
-            <span>{b.label}</span>
-          </div>
         ))}
 
         {/*
@@ -2112,6 +2034,24 @@ function BlockBar({
   const klass = task?.class_id ? cls.get(task.class_id) : undefined;
   const past = Date.parse(block.ends_at) <= Date.now();
 
+  /*
+   * An hour set aside for work that was already due by the time it starts.
+   *
+   * Marked rather than prevented. Autoplan will not do this and neither will
+   * the chat — both refuse and say why — but a drag will, and it should: a
+   * deadline you are going to miss is still a week you have to plan, and the
+   * app refusing to let you write down what you are actually going to do would
+   * only mean doing it somewhere the app cannot see.
+   *
+   * So the block goes exactly where it was put, and says what it is. Measured
+   * from the start, not the end: a session beginning after the deadline is
+   * unambiguously late, whereas one that merely runs over is the ordinary
+   * shape of finishing something on the day it is due.
+   */
+  const late = Boolean(
+    task?.due_at && Date.parse(block.starts_at) > Date.parse(task.due_at),
+  );
+
   const pop = useRef<HTMLDivElement | null>(null);
 
   /*
@@ -2168,19 +2108,32 @@ function BlockBar({
         routine ? " routine" : ""
       }${event ? " event" : ""}${block.locked ? " locked" : ""}${
         past ? " past" : ""
-      }${minutes < SLIVER_MINUTES ? " sliver" : ""}${open ? " open" : ""}`}
+      }${late ? " late" : ""}${
+        minutes < SLIVER_MINUTES ? " sliver" : ""
+      }${open ? " open" : ""}`}
       style={{
         bottom: `${box.bottom * 100}%`,
         height: `${box.height * 100}%`,
         left: `${box.left * 100}%`,
         width: `${box.width * 100}%`,
       }}
-      title={`${title} · ${clockOf(block.starts_at)}–${clockOf(block.ends_at)}`}
+      title={
+        `${title} · ${clockOf(block.starts_at)}–${clockOf(block.ends_at)}` +
+        (late && task?.due_at
+          ? ` · after the deadline, which was ${formatDue(task.due_at)}`
+          : "")
+      }
     >
       {/* The name, and only the name. A block too short to hold one is left as
           a bare stripe of colour rather than given an ellipsis to wear — three
           dots in a class colour say less than the colour does on its own. */}
       <span className="bar-name">{title}</span>
+
+      {/* Said, not merely coloured. The red edge is what catches the eye in a
+          dense column; the word is what tells you which of the several things
+          a red edge could mean this one is. Dropped on a sliver, where there
+          is no room for it and the edge has to carry the whole message. */}
+      {late && minutes >= SLIVER_MINUTES && <span className="bar-late">Late</span>}
 
       {open && (
         <div
@@ -2273,10 +2226,6 @@ function BlockBar({
                   This is {eventSuggestion.name}
                 </button>
               )}
-              {/* Said once, because the scope of the answer is the surprising
-                  part: you are not labelling Wednesday, you are labelling
-                  every Wednesday. */}
-              <p className="muted">Remembered for every lecture in this series.</p>
             </div>
           )}
 
@@ -2314,16 +2263,18 @@ function UnplannedRail({
   classById,
   missed,
   selection,
-  onUndefer,
+  planning,
+  onAutoplan,
 }: {
-  /** Puts a deferred task back in this week. The only undo it needs. */
-  onUndefer: (task: Task) => void;
+  /** True while a plan is being worked out, so the button can say so. */
+  planning: boolean;
+  /** Find hours for everything in this list that will take one. */
+  onAutoplan: () => void;
   outstanding: {
     task_id: string;
     minutes: number;
     guessed: boolean;
     missed: boolean;
-    deferred: boolean;
     task: Task;
   }[];
   skipped: PlanBlock[];
@@ -2345,7 +2296,7 @@ function UnplannedRail({
         <span className="muted small">
           {outstanding.length
             ? `${formatMinutes(total)} with no hour against it`
-            : "Everything on the board has time set aside."}
+            : "Nothing unplanned."}
         </span>
       </div>
 
@@ -2355,14 +2306,32 @@ function UnplannedRail({
       {missed > 0 && (
         <p className="muted small notice">
           {missed === 1 ? "One thing" : `${missed} things`} had time set aside
-          that has since passed. Those hours are back here, and Replan will find
-          them new ones.
+          that has since passed. Those hours are back here, and Autoplan will
+          find them new ones.
         </p>
       )}
 
-      {empty ? (
-        <p className="muted small">Drag anything off the grid and it lands here.</p>
-      ) : (
+      {/*
+        The one button that adds hours to the week, and it lives here rather
+        than at the top of the page — next to the work it is offering to place,
+        rather than next to the week it used to overwrite.
+
+        It only ever adds. Nothing already on the grid is moved or removed by
+        pressing it, which is what makes it safe to press at any point in a
+        week you have already been rearranging by hand.
+      */}
+      {outstanding.length > 0 && (
+        <div className="row rail-actions">
+          <button onClick={onAutoplan} disabled={planning}>
+            {planning ? "Finding hours…" : "Autoplan"}
+          </button>
+          <span className="muted small">
+            Finds hours for everything below. Nothing already on the grid moves.
+          </span>
+        </div>
+      )}
+
+      {empty ? null : (
         <ul className="list unplaced">
           {outstanding.map((u) => {
             const cls = u.task.class_id ? classById.get(u.task.class_id) : undefined;
@@ -2375,22 +2344,7 @@ function UnplannedRail({
                 selected={selection.has(`task:${u.task_id}`)}
                 onSelect={(e) => selection.select(`task:${u.task_id}`, e)}
               >
-                {u.missed && !u.deferred && <span className="tag">Missed</span>}
-                {/* Not a complaint, and it says so. The work is still owed and
-                    still on the board; you have said it is not this week's,
-                    and one press takes that back. */}
-                {u.deferred && (
-                  <button
-                    className="tag tag-button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onUndefer(u.task);
-                    }}
-                    title="Plan it this week after all"
-                  >
-                    Later · undo
-                  </button>
-                )}
+                {u.missed && <span className="tag">Missed</span>}
                 <span className={u.guessed ? "muted small guessed" : "muted small"}>
                   {formatMinutes(u.minutes)}
                 </span>

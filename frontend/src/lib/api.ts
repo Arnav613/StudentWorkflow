@@ -238,31 +238,57 @@ export const extractDocument = (document_id: string) =>
 // ---------------------------------------------------------------------------
 
 /**
- * One change to what `planWeek` will be handed. Never a block.
+ * One change to the week, of a kind a person could have made by hand.
  *
- * That is the whole of phase 13 in one type: there is no shape here that can
- * express "do the essay at nine on Tuesday", because the model does not get to
- * decide that. It fills in an estimate, blocks out an afternoon, defers a
- * reading or splits a task, and then the same deterministic planner the button
- * already calls produces every hour on the grid.
+ * That is the whole rule in one type. Every `kind` below is something the
+ * interface already offers: setting an estimate on a card, dragging a session
+ * to another hour, pulling one off the grid, dropping an unplanned task onto a
+ * day. There is deliberately no shape here for splitting a task, blacking out
+ * an afternoon or pushing work into next week — those were things only the
+ * model could do, and an edit nobody can perform by hand is one nobody can
+ * undo by hand either.
  *
  * One flat shape rather than a discriminated union of four. It is rendered by
  * one list and applied by one switch; four types would cost more narrowing
  * than they buy.
  */
 export type PlanEdit = {
-  kind: "estimate" | "blackout" | "defer" | "split";
+  kind:
+    // Work: one task, one hour.
+    | "estimate"
+    | "move_block"
+    | "unplan_block"
+    | "place_task"
+    // Repeating blocks: the standing commitments that come back every week.
+    | "add_routine"
+    | "retime_routine"
+    | "skip_routine_weekday"
+    | "skip_routine_once"
+    | "remove_routine";
   /** One clause naming the reason, shown beside the row before you accept. */
   why: string;
   task_id?: string | null;
+  /** The block being moved or removed. Null on `estimate` and `place_task`. */
+  block_id?: string | null;
+  /** The repeating block being changed. Null on `add_routine`. */
+  routine_id?: string | null;
+  /** `add_routine` only. Everything else names something already there. */
+  title?: string | null;
+  /**
+   * 0 is Sunday, matching `Date.getDay()`.
+   *
+   * Null carries meaning and a different one per kind: on `add_routine` it is
+   * "every day", and on `retime_routine` it is "every day this already runs
+   * on". Neither is a missing value.
+   */
+  weekday?: number | null;
+  /** `"HH:MM"`, 24-hour. */
+  time_of_day?: string | null;
+  /** `"YYYY-MM-DD"` — the single occurrence `skip_routine_once` drops. */
+  on_date?: string | null;
   minutes?: number | null;
   starts_at?: string | null;
   ends_at?: string | null;
-  reason?: string | null;
-  until?: string | null;
-  keep_minutes?: number | null;
-  rest_title?: string | null;
-  rest_minutes?: number | null;
 };
 
 /**

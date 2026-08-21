@@ -28,7 +28,7 @@ import io
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 import httpx
 import pypdf
@@ -1017,29 +1017,50 @@ async def extract_rubric(
 
     title = (out.get("title") or "").strip()[:200]
     return title or f"{course_name} rubric"[:200], rows
-
-
 # ---------------------------------------------------------------------------
 # Arguing with the planner — phase 13
 # ---------------------------------------------------------------------------
 #
-# The rule this section exists to enforce, and the only one that matters:
-# **the model changes the inputs, never the output.** It cannot emit a plan
-# block. It cannot name an hour at which to do the essay. Everything it is
-# allowed to say is an edit to something `planWeek` reads — an estimate, a
-# blackout, a deferral, a split — and then the ordinary deterministic planner
-# runs and produces every block on the grid, exactly as the button already
-# does. A model emitting blocks directly would be a second scheduler with no
-# rules, indistinguishable from the first on screen and impossible to reason
-# about when it puts a session at 3am.
+# The rule this section enforces, and the only one that matters: **the model
+# may do what a person sitting at the week can do, and nothing else.** Every
+# edit kind below has a counterpart the student could perform by hand on the
+# grid — set an estimate, drag a session to another hour, take one off the
+# board, place one that had no hour against it. There is no edit here that
+# invents a mechanism the interface does not already offer, because an edit
+# nobody can perform by hand is one nobody can undo by hand either.
+#
+# That cuts both ways, and the removals matter as much as the additions.
+# Splitting a task, blacking out an afternoon and deferring work to next week
+# were all things only the model could do. They are gone. A model that is the
+# sole author of a piece of state is a model whose decisions you cannot argue
+# with using the app itself.
 #
 # Everything below is a bound on that. The four edit kinds are a closed set,
-# `_clean_edits` drops anything outside it, and a task id the browser did not
-# send is not a task.
+# `_clean_edits` drops anything outside it, and an id the browser did not send
+# is not a task and not a block.
 
 # A week's worth. Beyond this the prompt is a bill rather than a week, and
 # nobody has sixty live tasks they are willing to discuss in one sentence.
 MAX_PLAN_TASKS = 60
+
+# The grid holds more rows than the rail does — every routine occurrence and
+# every mirrored lecture is an hour the model has to plan around, not just the
+# work it may move.
+MAX_PLAN_BLOCKS = 120
+
+# Nobody has forty standing commitments. This is a runaway guard, not a limit
+# anybody will meet.
+MAX_PLAN_ROUTINES = 40
+
+_WEEKDAY_NAMES = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+]
 
 # The conversation dies with the tab, but it should not grow without limit
 # inside it either — a long argument is re-sent whole on every turn.
@@ -1051,42 +1072,86 @@ MAX_TURN_CHARS = 1000
 MAX_EDITS = 12
 
 _PLAN_SYSTEM = """\
-You help a university student adjust the inputs to their week planner.
+You help a university student rearrange their week.
 
-You do NOT schedule anything. You never say when a task should happen, never
-name an hour for work, and never produce a timetable. A deterministic planner
-runs immediately after you and decides every single block. Your only job is to
-change what that planner is given, so that when it runs it produces the week
-the student is describing.
+Everything you propose is a change the student could have made themselves by
+hand on the grid, and nothing else. You are shown their tasks and every block
+currently on their week, and you answer with a list of edits they then accept
+or refuse. Nothing you say takes effect until they press accept.
 
-You may propose exactly four kinds of edit:
+The first four kinds are about work - one task, one hour:
 
-  estimate  - set how many minutes a task takes. Use this when a task has no
-              estimate, or when the student tells you one is wrong.
-  blackout  - mark an interval as unavailable. Use this for "I am out on
-              Wednesday afternoon", "nothing after 9pm on Thursday", "I am
-              travelling Friday". One edit per continuous interval, per day.
-  defer     - tell the planner not to spend hours on a task before a given
-              date. Use this when the student says something can wait, or when
-              the week plainly does not fit and they have said what matters
-              less. This does NOT change the deadline, and if the deadline
-              falls before the date you propose you must say so.
-  split     - divide one task into two, when the student wants to do part of
-              it now. The original keeps a smaller estimate and the remainder
-              becomes a second task with its own title.
+  estimate     - set how many minutes a task takes. Use this when a task has
+                 no estimate, or when the student tells you one is wrong.
+  move_block   - move one existing block to a different day or time. This is
+                 the same thing as dragging it. Give the block's id and the
+                 new start and end. Keep the block's length unless the student
+                 asks for a different one.
+  unplan_block - take one existing block off the grid. The work is not done
+                 and not deleted; it goes back to the unplanned list with no
+                 hour against it. Use this when the student says a session is
+                 not happening.
+  place_task   - give an unplanned task an hour, by creating a block for it.
+                 Give the task's id and a start and end. This is the same
+                 thing as dragging it out of the unplanned list onto a day.
+
+The other five are about repeating blocks - the standing commitments that come
+back every week. Gym, a shift, a rehearsal, dinner with someone. They are not
+tasks: they never get ticked off and they have no deadline, they simply happen
+again:
+
+  add_routine  - a new repeating block. Give a `title`, a `time_of_day` as
+                 "HH:MM", how many `minutes` it lasts, and a `weekday` - 0 for
+                 Sunday through 6 for Saturday, or leave it out for something
+                 that happens every day.
+                 One weekday per edit. "Gym on Monday, Wednesday and Friday"
+                 is three of these, one per day, exactly as the student would
+                 add them by hand.
+  retime_routine   - a repeating block now happens at a different time. Give
+                 the routine's id and the new `time_of_day`. Add a `weekday`
+                 to change only that one day and leave the rest alone; leave
+                 it out to change every day the routine runs.
+  skip_routine_weekday - a repeating block no longer happens on one particular
+                 weekday, but continues on the others. Give the routine's id
+                 and the `weekday`. Only for a routine that runs every day -
+                 for one that already runs on a single weekday, dropping that
+                 weekday is just removing it, so use remove_routine and say so.
+  skip_routine_once - one single occurrence is not happening. Give the
+                 routine's id and the `on_date` as "YYYY-MM-DD". The routine
+                 itself is untouched and comes back the following week.
+  remove_routine - the repeating block is gone for good, on every day it ran.
 
 Hard rules:
 
 - You never change a due date. You have no way to and must not claim to.
+- You cannot change how long a repeating block lasts once it exists. Its time
+  can move and its days can change, but its length is fixed at the moment it
+  is created; say so rather than proposing something else.
+- Do not turn work into a repeating block. "Revise every evening" is several
+  sessions of a task, not a routine - a routine is never ticked off, and work
+  that never gets ticked off is work the board stops tracking.
 - You never touch grades, notes, or anything not in the week you were given.
-- Only use task ids that appear in the week you were given.
-- Blackout times are ISO 8601 with an offset, and must fall inside the
-  planning horizon you were given.
+- Only use task ids and block ids that appear in the week you were given.
+- Only blocks marked `movable` may be moved or unplanned. A lecture from the
+  student's calendar and a recurring routine are not yours to touch; if the
+  student wants one gone they must do it themselves, and you should say so.
+- Times are ISO 8601 with an offset, and must fall inside the planning
+  horizon you were given.
+- Never put work after its own deadline. If a block cannot fit before the
+  task is due, do not propose it anywhere — say plainly that it will not fit
+  in time, and leave it to the student.
+- Do not put two blocks on top of each other, and do not put work on top of a
+  routine or a lecture. Use the hours that are free.
 - If a request is vague, ask a short question in `message` and return no
   edits. An empty edit list is a perfectly good answer.
 - If the student asks for something you cannot express with these four kinds,
   say so plainly in `message` and return no edits. Do not approximate it with
-  an edit that means something else.
+  an edit that means something else. In particular you cannot split a task in
+  two, cannot mark hours unavailable, and cannot push work into a later week -
+  say so rather than doing something that resembles it.
+- A repeating block is a real commitment in the student's life, not a way of
+  reserving time. If they want an hour held for something, that is a routine
+  only if it genuinely happens every week.
 - Every edit carries `why` - one short clause naming the reason, in the
   student's own terms. It is shown next to the edit before they accept it.
 
@@ -1107,18 +1172,29 @@ _PLAN_SCHEMA = {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["estimate", "blackout", "defer", "split"],
+                        "enum": [
+                            "estimate",
+                            "move_block",
+                            "unplan_block",
+                            "place_task",
+                            "add_routine",
+                            "retime_routine",
+                            "skip_routine_weekday",
+                            "skip_routine_once",
+                            "remove_routine",
+                        ],
                     },
                     "why": {"type": "string"},
                     "task_id": {"type": "string"},
+                    "block_id": {"type": "string"},
+                    "routine_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "weekday": {"type": "integer"},
+                    "time_of_day": {"type": "string"},
+                    "on_date": {"type": "string"},
                     "minutes": {"type": "integer"},
                     "starts_at": {"type": "string"},
                     "ends_at": {"type": "string"},
-                    "reason": {"type": "string"},
-                    "until": {"type": "string"},
-                    "keep_minutes": {"type": "integer"},
-                    "rest_title": {"type": "string"},
-                    "rest_minutes": {"type": "integer"},
                 },
                 "required": ["kind", "why"],
             },
@@ -1130,7 +1206,7 @@ _PLAN_SCHEMA = {
 
 @dataclass(frozen=True)
 class PlanEdit:
-    """One change to what the planner will be handed. Never a plan block.
+    """One change to the week, of a kind a person could have made by hand.
 
     Deliberately one flat shape rather than four classes. It crosses two
     process boundaries as JSON and is rendered by one list component; four
@@ -1142,14 +1218,36 @@ class PlanEdit:
     kind: str
     why: str
     task_id: str | None = None
+    block_id: str | None = None
+    routine_id: str | None = None
+    #: On `add_routine` only. Everything else names something already there.
+    title: str | None = None
+    #: 0 = Sunday. None on a routine edit means "every day it runs".
+    weekday: int | None = None
+    time_of_day: str | None = None
+    on_date: str | None = None
     minutes: int | None = None
     starts_at: str | None = None
     ends_at: str | None = None
-    reason: str | None = None
-    until: str | None = None
-    keep_minutes: int | None = None
-    rest_title: str | None = None
-    rest_minutes: int | None = None
+
+
+@dataclass(frozen=True)
+class PlanRoutine:
+    """A standing commitment, as the model needs to see it.
+
+    `weekday` is the whole of the recurrence: None means every day, and an
+    integer means that one day of the week. There is no richer pattern in this
+    app — "Monday, Wednesday and Friday" is three rows, because that is how
+    the form the student uses writes it, and a model that could express in one
+    edit what a person needs three of would be a model whose diffs cannot be
+    checked against the screen.
+    """
+
+    id: str
+    title: str
+    weekday: int | None
+    time_of_day: str
+    duration_minutes: int
 
 
 @dataclass(frozen=True)
@@ -1164,10 +1262,28 @@ class PlanTask:
     id: str
     title: str
     class_name: str
-    due_on: str | None
+    due_at: str | None
     estimate_minutes: int | None
     planned_minutes: int
-    deferred_until: str | None
+
+
+@dataclass(frozen=True)
+class PlanBlock:
+    """An hour already spoken for, and whether the model may speak for it.
+
+    `movable` is the whole reason this type exists rather than a bare list of
+    intervals. A work session is the student's to drag and therefore the
+    model's to propose dragging; a lecture mirrored from Google and a
+    recurring routine are neither. Both still occupy time, so both are sent —
+    what changes is only whether an edit may name them.
+    """
+
+    id: str
+    label: str
+    task_id: str | None
+    starts_at: str
+    ends_at: str
+    movable: bool
 
 
 @dataclass(frozen=True)
@@ -1194,100 +1310,266 @@ def _edit_minutes(value: object) -> int | None:
     return max(MIN_EDIT_MINUTES, round(n / 5) * 5)
 
 
-def _plus_days(iso_date: str, days: int) -> str:
-    return (date.fromisoformat(iso_date) + timedelta(days=days)).isoformat()
+# A repeating block may be longer than a study session — a shift is eight
+# hours and a rehearsal can be four. The task bound above is deliberately
+# tighter, and this is the one the routine form itself enforces.
+MAX_ROUTINE_MINUTES = 16 * 60
+
+
+def _routine_minutes(value: object) -> int | None:
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not MIN_EDIT_MINUTES <= n <= MAX_ROUTINE_MINUTES:
+        return None
+    return max(MIN_EDIT_MINUTES, round(n / 5) * 5)
+
+
+def _weekday(value: object) -> int | None:
+    """0 for Sunday through 6 for Saturday, matching `Date.getDay()`.
+
+    Anything else is nothing rather than a clamp. A model that meant Thursday
+    and said 7 has made a mistake, and Sunday is not a better guess at what it
+    meant than silence is.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= 6 else None
+
+
+def _time_of_day(value: object) -> str | None:
+    """"HH:MM", on the 24-hour clock, or nothing.
+
+    Seconds are trimmed rather than refused — a model that answers "18:00:00"
+    has said exactly the right thing in a slightly wrong shape — but a value
+    that is not a real time of day is dropped, because a routine at 25:00 is a
+    row nothing on the grid can draw.
+    """
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(":")
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _instant(value: object) -> datetime | None:
+    """An ISO string with an offset, or nothing.
+
+    A local time with no offset is an hour the server would have to guess at,
+    and it would guess UTC — which is five and a half hours away from everyone
+    this app is for. So a naive timestamp is not a lenient case to normalise,
+    it is a wrong answer, and it is dropped.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else None
+
+
+def _span(
+    item: dict, *, horizon: tuple[datetime, datetime]
+) -> tuple[datetime, datetime] | None:
+    """The start and end of a proposed block, or nothing if it makes no sense.
+
+    Four ways to fail and all of them silent: no offset, backwards, a length
+    outside what the pickers offer, or an hour outside the week being
+    discussed. A block in November changes nothing about this week and would
+    sit on the grid saying nothing.
+    """
+    begins = _instant(item.get("starts_at"))
+    finishes = _instant(item.get("ends_at"))
+    if not begins or not finishes or finishes <= begins:
+        return None
+
+    length = int((finishes - begins).total_seconds() // 60)
+    if not MIN_EDIT_MINUTES <= length <= MAX_EDIT_MINUTES:
+        return None
+
+    start, end = horizon
+    if begins < start or finishes > end:
+        return None
+    return begins, finishes
 
 
 def _clean_edits(
-    raw: object, *, task_ids: set[str], horizon: tuple[str, str]
+    raw: object,
+    *,
+    tasks: dict[str, PlanTask],
+    blocks: dict[str, PlanBlock],
+    routines: dict[str, PlanRoutine],
+    horizon: tuple[str, str],
 ) -> list[PlanEdit]:
     """Everything the model said, minus everything it was not allowed to say.
 
     This function is the fence, and it assumes nothing about the prompt above
-    it holding. A task id that was never sent is not a task; a blackout outside
-    the seven days being planned is not a blackout; an edit missing the field
-    that gives it meaning is dropped rather than defaulted, because a defaulted
-    estimate is the app inventing a number and attributing it to a model.
+    it holding. An id that was never sent is not a task and not a block; a
+    lecture is not movable however politely the model asks; an hour past a
+    deadline is not an hour this app will offer to schedule work in; and an
+    edit missing the field that gives it meaning is dropped rather than
+    defaulted, because a defaulted estimate is the app inventing a number and
+    attributing it to a model.
     """
     if not isinstance(raw, list):
         return []
 
-    start, end = horizon
+    bounds = (horizon_start(horizon[0]), horizon_start(horizon[1]))
     out: list[PlanEdit] = []
+
+    def in_time(task_id: str | None, begins: datetime) -> bool:
+        """Work is not scheduled after it is due.
+
+        The student may do that by hand — a deadline missed is still a decision
+        they are allowed to make, and the grid marks it Late when they do. The
+        model proposing it would be different: the app suggesting a plan it
+        already knows cannot work.
+        """
+        task = tasks.get(task_id or "")
+        due = _instant(task.due_at) if task and task.due_at else None
+        return not due or begins < due
 
     for item in raw:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("kind") or "")
         why = str(item.get("why") or "").strip()[:200]
+
         task_id = item.get("task_id")
-        task_id = task_id if isinstance(task_id, str) and task_id in task_ids else None
+        task_id = task_id if isinstance(task_id, str) and task_id in tasks else None
+
+        routine_id = item.get("routine_id")
+        routine = routines.get(routine_id) if isinstance(routine_id, str) else None
+
+        block_id = item.get("block_id")
+        block = blocks.get(block_id) if isinstance(block_id, str) else None
+        # Sent for context, not for editing. A routine occurrence and a
+        # mirrored lecture are hours the model plans around.
+        if block and not block.movable:
+            block = None
 
         if kind == "estimate":
             minutes = _edit_minutes(item.get("minutes"))
             if task_id and minutes:
                 out.append(PlanEdit(kind, why, task_id=task_id, minutes=minutes))
 
-        elif kind == "blackout":
-            starts, ends = item.get("starts_at"), item.get("ends_at")
-            if not isinstance(starts, str) or not isinstance(ends, str):
-                continue
-            try:
-                begins = datetime.fromisoformat(starts)
-                finishes = datetime.fromisoformat(ends)
-            except ValueError:
-                continue
-            if begins.tzinfo is None or finishes.tzinfo is None:
-                # A local time with no offset is an hour the server would have
-                # to guess at, and it would guess UTC — which is five and a
-                # half hours away from everyone this app is for.
-                continue
-            if finishes <= begins:
-                continue
-            # Inside the week being planned. A blackout in November changes
-            # nothing about this plan and would sit on the grid saying nothing.
-            if begins < horizon_start(start) or finishes > horizon_start(end):
-                continue
-            out.append(
-                PlanEdit(
-                    kind,
-                    why,
-                    starts_at=begins.isoformat(),
-                    ends_at=finishes.isoformat(),
-                    reason=str(item.get("reason") or "").strip()[:120] or None,
+        elif kind == "move_block":
+            span = _span(item, horizon=bounds)
+            if block and span and in_time(block.task_id, span[0]):
+                out.append(
+                    PlanEdit(
+                        kind,
+                        why,
+                        block_id=block.id,
+                        task_id=block.task_id,
+                        starts_at=span[0].isoformat(),
+                        ends_at=span[1].isoformat(),
+                    )
                 )
-            )
 
-        elif kind == "defer":
-            until = item.get("until")
-            if not task_id or not isinstance(until, str):
-                continue
-            try:
-                date.fromisoformat(until)
-            except ValueError:
-                continue
-            # Not into the past, which defers nothing, and not so far out that
-            # "next week" has quietly become "never".
-            today = start[:10]
-            if until <= today or until > _plus_days(today, 60):
-                continue
-            out.append(PlanEdit(kind, why, task_id=task_id, until=until))
+        elif kind == "unplan_block":
+            if block:
+                out.append(
+                    PlanEdit(kind, why, block_id=block.id, task_id=block.task_id)
+                )
 
-        elif kind == "split":
-            keep = _edit_minutes(item.get("keep_minutes"))
-            rest = _edit_minutes(item.get("rest_minutes"))
-            title = str(item.get("rest_title") or "").strip()[:200]
-            if task_id and keep and rest and title:
+        elif kind == "place_task":
+            span = _span(item, horizon=bounds)
+            if task_id and span and in_time(task_id, span[0]):
                 out.append(
                     PlanEdit(
                         kind,
                         why,
                         task_id=task_id,
-                        keep_minutes=keep,
-                        rest_minutes=rest,
-                        rest_title=title,
+                        starts_at=span[0].isoformat(),
+                        ends_at=span[1].isoformat(),
                     )
                 )
+
+        elif kind == "add_routine":
+            title = str(item.get("title") or "").strip()[:200]
+            when = _time_of_day(item.get("time_of_day"))
+            minutes = _routine_minutes(item.get("minutes"))
+            # `weekday` absent is meaningful here and only here: it is how the
+            # form says "every day". So a missing value is kept as None, and
+            # only a value that is present and wrong drops the edit.
+            weekday = _weekday(item.get("weekday"))
+            if "weekday" in item and item["weekday"] is not None and weekday is None:
+                continue
+            if title and when and minutes:
+                out.append(
+                    PlanEdit(
+                        kind,
+                        why,
+                        title=title,
+                        weekday=weekday,
+                        time_of_day=when,
+                        minutes=minutes,
+                    )
+                )
+
+        elif kind == "retime_routine":
+            when = _time_of_day(item.get("time_of_day"))
+            if not routine or not when:
+                continue
+            weekday = _weekday(item.get("weekday"))
+            # A routine that already runs on one weekday has nothing to make an
+            # exception to — see `applyScope`, which quietly widens the same
+            # case. Widening it here too keeps the diff row honest: it will say
+            # "every Tuesday" because that is all there is.
+            if routine.weekday is not None:
+                weekday = None
+            out.append(
+                PlanEdit(
+                    kind,
+                    why,
+                    routine_id=routine.id,
+                    weekday=weekday,
+                    time_of_day=when,
+                )
+            )
+
+        elif kind == "skip_routine_weekday":
+            weekday = _weekday(item.get("weekday"))
+            # Refused, not translated, for a routine that runs on one day only.
+            # Dropping the single day a rule applies to is deleting the rule,
+            # and a row that said "no gym on Thursdays" while deleting gym
+            # outright is the one kind of diff this whole step exists to
+            # prevent. The model is told to use remove_routine and say so.
+            if not routine or weekday is None or routine.weekday is not None:
+                continue
+            out.append(
+                PlanEdit(kind, why, routine_id=routine.id, weekday=weekday)
+            )
+
+        elif kind == "skip_routine_once":
+            on_date = item.get("on_date")
+            if not routine or not isinstance(on_date, str):
+                continue
+            try:
+                day = date.fromisoformat(on_date.strip()[:10])
+            except ValueError:
+                continue
+            # Inside the week being discussed. Skipping an occurrence in
+            # November is a decision about a week nobody is looking at.
+            if not (bounds[0].date() <= day <= bounds[1].date()):
+                continue
+            out.append(
+                PlanEdit(kind, why, routine_id=routine.id, on_date=day.isoformat())
+            )
+
+        elif kind == "remove_routine":
+            if routine:
+                out.append(PlanEdit(kind, why, routine_id=routine.id))
 
         if len(out) == MAX_EDITS:
             break
@@ -1312,8 +1594,8 @@ def horizon_start(value: str) -> datetime:
 async def plan_advice(
     *,
     tasks: list[PlanTask],
-    routines: list[str],
-    blackouts: list[str],
+    blocks: list[PlanBlock],
+    routines: list[PlanRoutine],
     unplaced: list[str],
     horizon: tuple[str, str],
     turns: list[tuple[str, str]],
@@ -1335,6 +1617,8 @@ async def plan_advice(
         raise AiError("Nothing was asked")
 
     kept = tasks[:MAX_PLAN_TASKS]
+    on_grid = blocks[:MAX_PLAN_BLOCKS]
+    kept_routines = routines[:MAX_PLAN_ROUTINES]
     week = {
         "planning_from": horizon[0],
         "planning_to": horizon[1],
@@ -1343,15 +1627,38 @@ async def plan_advice(
                 "id": t.id,
                 "title": t.title[:200],
                 "class": t.class_name[:100],
-                "due": t.due_on,
+                "due": t.due_at,
                 "estimate_minutes": t.estimate_minutes,
                 "already_planned_minutes": t.planned_minutes,
-                "deferred_until": t.deferred_until,
             }
             for t in kept
         ],
-        "routines": routines[:40],
-        "blackouts": blackouts[:40],
+        "blocks": [
+            {
+                "id": b.id,
+                "what": b.label[:200],
+                "task_id": b.task_id,
+                "from": b.starts_at,
+                "to": b.ends_at,
+                "movable": b.movable,
+            }
+            for b in on_grid
+        ],
+        "routines": [
+            {
+                "id": r.id,
+                "title": r.title[:200],
+                # Named rather than numbered. The model answers with the
+                # number, but it reads the week far better when the week says
+                # "Tuesday" — and the two cannot drift, because this line is
+                # the only place the mapping is written down.
+                "day": "every day" if r.weekday is None else _WEEKDAY_NAMES[r.weekday],
+                "weekday": r.weekday,
+                "at": r.time_of_day,
+                "minutes": r.duration_minutes,
+            }
+            for r in kept_routines
+        ],
         "not_fitting": unplaced[:40],
     }
 
@@ -1385,7 +1692,11 @@ async def plan_advice(
     out = await _generate_turns(contents, _PLAN_SCHEMA, system=_PLAN_SYSTEM)
 
     edits = _clean_edits(
-        out.get("edits"), task_ids={t.id for t in kept}, horizon=horizon
+        out.get("edits"),
+        tasks={t.id: t for t in kept},
+        blocks={b.id: b for b in on_grid},
+        routines={r.id: r for r in kept_routines},
+        horizon=horizon,
     )
     message = str(out.get("message") or "").strip()[:1200]
     if not message:

@@ -94,7 +94,7 @@ export function snapMinutes(minutes: number): number {
  * The longest single sitting the planner will *suggest*, and the break after.
  *
  * No longer a rule about splitting — nothing splits a task any more; see the
- * placement loop in planWeek. This survives as the length a task claims when
+ * placement loop in autoplan. This survives as the length a task claims when
  * it has no estimate at all and something has to be assumed, and as the point
  * past which a block is worth a break in the UI.
  */
@@ -121,7 +121,7 @@ export type BusyInterval = { starts_at: string; ends_at: string };
 /** Everything the planner reads off a task. Nothing else on the row matters. */
 export type PlannableTask = Pick<
   Task,
-  "id" | "class_id" | "due_at" | "status" | "estimate_minutes" | "plan_skip_until"
+  "id" | "class_id" | "due_at" | "status" | "estimate_minutes"
 >;
 
 /** A block the planner decided on. Shaped for insert; no id until it is saved. */
@@ -145,24 +145,24 @@ export type Unplaced = {
   reason: "deadline" | "week";
 };
 
-export type PlanInput = {
+export type AutoplanInput = {
   tasks: PlannableTask[];
-  routines: Routine[];
   /**
-   * Hours already spent: Google Calendar, read-only, times only and no titles
-   * ever leaving Google — and, since phase 13, blackouts. Two sources, one
-   * list, because the difference between them changes nothing here.
+   * Every block already on the grid, of every kind.
+   *
+   * One list and no distinction between them, because Autoplan makes none: a
+   * lecture, a routine and a session you dragged to Thursday are all simply
+   * hours that are gone. It is the caller's job to leave out what is not
+   * really there — a dismissed lecture is an hour you got back.
    */
-  busy: BusyInterval[];
-  /** Blocks a person placed by hand. Immovable, and planned around. */
-  locked: PlanBlock[];
-  /** Weekday exceptions to routine times. See migration 0008. */
-  routineOverrides?: RoutineOverride[];
+  placed: PlanBlock[];
   /** The instant the plan starts. Nothing is ever scheduled before it. */
   from: Date;
   days?: number;
   /** Estimate fallback per class, from `classMedians`. */
   medians?: Map<string, number>;
+  /** Overridable for tests, and for a caller that has already read the clock. */
+  now?: number;
 };
 
 export type Plan = {
@@ -185,26 +185,6 @@ export type Interval = { start: number; end: number };
  * Median rather than mean: one 8-hour term paper should not turn every
  * unestimated reading in the course into a four-hour job.
  */
-/**
- * "Leave it until Monday" — is that still true today?
- *
- * Phase 13's one addition to the planner, and deliberately the smallest one
- * that could work: a date on the task, compared against the day being planned
- * from. Nothing sweeps the column and nothing expires it — the comparison
- * simply stops being true, which is why a deferral cannot rot into a task
- * that quietly never gets planned again.
- *
- * The *logical* day, so a deferral entered at one in the morning still means
- * the night you are having rather than the one after it. See DAY_ROLLOVER_HOUR.
- */
-export function deferred(
-  task: Pick<PlannableTask, "plan_skip_until">,
-  from: Date,
-): boolean {
-  if (!task.plan_skip_until) return false;
-  return task.plan_skip_until > isoDate(logicalDayOf(from));
-}
-
 export function classMedians(tasks: PlannableTask[]): Map<string, number> {
   const byClass = new Map<string, number[]>();
   for (const t of tasks) {
@@ -315,7 +295,7 @@ export function overrideIndex(
  *
  * One place, because there are now two callers that must agree exactly: the
  * planner generating a whole week, and the direct write that puts a new
- * routine straight onto the grid without waiting for Replan. Two
+ * routine straight onto the grid without waiting for anything else. Two
  * implementations of "when is gym on Tuesday" would drift, and the symptom
  * would be a block that moves the first time you press the button.
  */
@@ -404,12 +384,12 @@ export function isoDate(d: Date): string {
 /**
  * An instant, written down without leaving the timezone it happened in.
  *
- * `toISOString` is UTC, and UTC is the wrong answer for the two things phase
- * 13 sends to the server: the horizon, whose date half is read as "today",
- * and a blackout, which is an afternoon in the city you are standing in. In
- * India both are five and a half hours from midnight, so the UTC date of a
- * local midnight is yesterday — and "leave it until tomorrow" would come back
- * meaning today.
+ * `toISOString` is UTC, and UTC is the wrong answer for what the planner chat
+ * sends to the server: the horizon, whose date half is read as "today", and
+ * the hours in any block the model proposes back, which are afternoons in the
+ * city you are standing in. In India both are five and a half hours from
+ * midnight, so the UTC date of a local midnight is yesterday — and "Thursday
+ * evening" would come back meaning Friday.
  */
 export function localIso(d: Date): string {
   const pad = (n: number) => String(Math.floor(Math.abs(n))).padStart(2, "0");
@@ -453,112 +433,29 @@ export function formatSessionDate(iso: string): string {
    ------------------------------------------------------------------------ */
 
 /**
- * The shape of the week before any work is put into it.
+ * Every hour already spoken for, as bare intervals.
  *
- * Routines, the blocks a person locked, and the hours Google says are gone —
- * everything that is not a decision the planner gets to make. Split out of
- * `planWeek` because phase 08's forecast needs exactly this and nothing else:
- * it never places a task, it only asks how many hours a day has left. Two
- * implementations of "which hours are already spoken for" would put a capacity
- * line on the forecast that disagreed with the week the planner actually
- * produces, and the disagreement would be invisible — two plausible numbers on
- * two screens, no way to tell which one is lying.
+ * One argument, and that is the point. The grid is now the single record of
+ * what a week contains: a routine occurrence, a mirrored lecture and a work
+ * session are all rows in `plan_blocks`, maintained by the things that own
+ * them — `resyncRoutine` for routines, the calendar mirror for lectures, your
+ * own drags for the rest. So there is nothing left for this function to
+ * assemble from several sources and no way for two of those sources to
+ * disagree. It reads the board and reports which minutes are gone.
+ *
+ * Never earlier than `from`: an hour that has gone by is not free, it is over.
  */
-export type Commitments = {
-  /** Routine occurrences and locked blocks, shaped for a plan. */
-  blocks: PlannedBlock[];
-  /** Every interval already gone, sorted by start. Overlaps are normal. */
-  occupied: Interval[];
-  /** Minutes a locked block has already committed to a task, by task id. */
-  lockedMinutes: Map<string, number>;
-};
-
-export function commitments({
-  routines,
-  routineOverrides = [],
-  busy,
-  locked,
-  from,
-  days,
-}: {
-  routines: Routine[];
-  routineOverrides?: RoutineOverride[];
-  busy: BusyInterval[];
-  locked: PlanBlock[];
-  from: Date;
-  days: number;
-}): Commitments {
+export function occupiedBy(
+  placed: BusyInterval[],
+  from: Date,
+  days: number,
+): Interval[] {
   const horizon = planDays(from, days);
   const floor = from.getTime();
   const ceiling = at(addDays(horizon[0], days - 1), DAY_END_HOUR * 60);
 
-  const blocks: PlannedBlock[] = [];
   const occupied: Interval[] = [];
-
-  /*
-   * 1a. Routines, through the same generator the direct writes use.
-   *
-   * `pinned` is the "just this once" answer: a routine block someone dragged
-   * is locked, is re-emitted by step 1b below exactly where they left it, and
-   * must not also be generated here — that would put gym on Tuesday twice, at
-   * five and at six, which is precisely the confusion moving it was meant to
-   * resolve.
-   */
-  const overrides = overrideIndex(routineOverrides);
-  const pinned = new Map<string, Set<string>>();
-  for (const b of locked) {
-    if (!b.routine_id) continue;
-    const days = pinned.get(b.routine_id) ?? new Set<string>();
-    days.add(dayKey(b.starts_at));
-    pinned.set(b.routine_id, days);
-  }
-
-  for (const r of routines) {
-    for (const block of routineBlocks({
-      routine: r,
-      overrides,
-      from: horizon[0],
-      days,
-      pinned: pinned.get(r.id),
-    })) {
-      const start = Date.parse(block.starts_at);
-      const end = Date.parse(block.ends_at);
-      if (end <= floor) continue;
-      blocks.push(block);
-      occupied.push({ start, end });
-    }
-  }
-
-  // 1b. Locked blocks, exactly as they are. These carry ids already; they are
-  // re-emitted so the caller can render one list, and are recognisable by
-  // locked === true when it comes to deciding what to write.
-  const lockedMinutes = new Map<string, number>();
-  for (const b of locked) {
-    const start = Date.parse(b.starts_at);
-    const end = Date.parse(b.ends_at);
-    if (end <= floor || start >= ceiling) continue;
-    blocks.push({
-      task_id: b.task_id,
-      routine_id: b.routine_id,
-      starts_at: b.starts_at,
-      ends_at: b.ends_at,
-      locked: true,
-    });
-    occupied.push({ start, end });
-    // Time you have already committed to a task is time it no longer needs.
-    // Without this, locking a two-hour session for an essay would plan the
-    // whole essay again around it.
-    if (b.task_id) {
-      const done = (end - start) / MINUTE;
-      lockedMinutes.set(b.task_id, (lockedMinutes.get(b.task_id) ?? 0) + done);
-    }
-  }
-
-  // 2. Intervals that are simply gone: lectures from Google (see
-  // routers/calendar.py) and phase 13's blackouts. They occupy time and emit
-  // no block, which is the whole reason both can share one list — the
-  // scheduler has never needed to know what a busy hour was for.
-  for (const b of busy) {
+  for (const b of placed) {
     const start = Date.parse(b.starts_at);
     const end = Date.parse(b.ends_at);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
@@ -567,7 +464,7 @@ export function commitments({
   }
 
   occupied.sort((a, b) => a.start - b.start);
-  return { blocks, occupied, lockedMinutes };
+  return occupied;
 }
 
 /**
@@ -592,62 +489,69 @@ export function freeWindows(occupied: Interval[], from: Date, days: number): Int
 }
 
 /**
- * Plan `days` days from `from`.
+ * Find hours for the work that has none. Touch nothing that already has some.
  *
- * Order of business, and the reason for it:
+ * This replaced Replan, and the difference is the whole design. Replan
+ * regenerated the week: it deleted every block it had made, planned the lot
+ * again from scratch, and so one press could rearrange sessions you had read,
+ * agreed with and half worked through. The only thing standing between you and
+ * that was `locked`, an invisible flag set as a side effect of dragging — a
+ * safety mechanism nobody could see, on a button whose real behaviour nobody
+ * could predict.
  *
- * 1. Routines and locked blocks become blocks immediately. They are not
- *    decisions this function gets to make — they are the shape of the week it
- *    has to work inside.
- * 2. Those, plus the calendar's busy intervals, are carved out of waking
- *    hours to leave the free windows.
- * 3. Tasks are placed earliest deadline first, each one taking the earliest
- *    free window it fits inside whole, and never after its own due date.
+ * Autoplan is the smaller and more honest operation. It takes the board
+ * exactly as it stands, treats every minute of it as gone, and looks for room
+ * in what is left. What comes back is a list of *new* blocks and nothing else.
+ * It cannot move a session and it cannot remove one. That makes the button
+ * safe to press at any moment, which in turn is what makes it fit where it now
+ * lives — on the Unplanned rail, next to the work it is offering to place.
+ *
+ * Order of business:
+ *
+ * 1. The board becomes a set of busy intervals; waking hours minus those are
+ *    the free windows.
+ * 2. Whatever the rail says is still owed — the same `unscheduled` figure the
+ *    rail itself renders, so the button places exactly what you can see — is
+ *    queued earliest deadline first.
+ * 3. Each task takes the earliest window it fits inside whole, and never one
+ *    that starts after its own due date.
  * 4. Whatever is left over is returned, loudly.
  */
-export function planWeek({
+export function autoplan({
   tasks,
-  routines,
-  busy,
-  locked,
-  routineOverrides = [],
+  placed,
   from,
   days = 7,
   medians,
-}: PlanInput): Plan {
+  now = Date.now(),
+}: AutoplanInput): Plan {
   const floor = from.getTime();
 
-  // 1 and 2. The shape of the week, which this function does not get a vote
-  // on. See `commitments`.
-  const { blocks, occupied, lockedMinutes } = commitments({
-    routines,
-    routineOverrides,
-    busy,
-    locked,
-    from,
-    days,
-  });
-  const windows = freeWindows(occupied, from, days);
+  // 1. The shape of the week, which this function does not get a vote on.
+  const windows = freeWindows(occupiedBy(placed, from, days), from, days);
 
-  // 3. Tasks, earliest deadline first. Undated work sorts last — "sometime"
-  // must never displace "Thursday" — and among equals the shorter job goes
-  // first, so a week ends with more things finished rather than more started.
-  const queue = tasks
-    /*
-     * Done work, and work you have said can wait. The second is phase 13:
-     * the task keeps its deadline, keeps its card and keeps its place in the
-     * rail — it just gets no hours this side of the date you named. Filtering
-     * it here rather than deleting anything is what makes "actually, do it
-     * after all" a single field going back to null.
-     */
-    .filter((t) => t.status !== "done" && !deferred(t, from))
-    .map((t) => {
-      const { minutes, guessed } = estimateFor(t, medians);
-      const due = t.due_at ? Date.parse(t.due_at) : Number.POSITIVE_INFINITY;
+  /*
+   * 2. What the rail says is outstanding, and deliberately nothing else.
+   *
+   * `unscheduled` is the single answer to "what has no hour against it" — it
+   * is what the rail renders, it discounts hours already blocked out, and it
+   * counts a session whose time has passed as not-done rather than handled.
+   * Autoplan reading a second, differently-derived list would be a button that
+   * places work the rail never mentioned, or silently skips work it did.
+   */
+  const outstanding = unscheduled(tasks, placed, medians, now);
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+
+  // Earliest deadline first. Undated work sorts last — "sometime" must never
+  // displace "Thursday" — and among equals the shorter job goes first, so a
+  // week ends with more things finished rather than more started.
+  const queue = outstanding
+    .map((u) => {
+      const task = byId.get(u.task_id)!;
+      const due = task.due_at ? Date.parse(task.due_at) : Number.POSITIVE_INFINITY;
       return {
-        task: t,
-        guessed,
-        remaining: Math.max(0, minutes - (lockedMinutes.get(t.id) ?? 0)),
+        task,
+        remaining: u.minutes,
         // Sorts by the real deadline, so overdue work still comes first.
         due,
         /*
@@ -659,12 +563,12 @@ export function planWeek({
         limit: due <= floor ? Number.POSITIVE_INFINITY : due,
       };
     })
-    .filter((t) => t.remaining > 0)
     .sort(
       (a, b) =>
         a.due - b.due || a.remaining - b.remaining || (a.task.id < b.task.id ? -1 : 1),
     );
 
+  const blocks: PlannedBlock[] = [];
   const unplaced: Unplaced[] = [];
 
   for (const item of queue) {
@@ -677,7 +581,9 @@ export function planWeek({
 
       // Nothing is scheduled after its own due date. A plan that puts the
       // work after the deadline is not a plan, it is a record of a failure
-      // that has not happened yet.
+      // that has not happened yet. You may still drag a block past a deadline
+      // yourself — that is a decision you are allowed to make, and the grid
+      // marks it Late when you do — but nothing here will make it for you.
       const limit = Math.min(w.end, item.limit);
       if (limit <= w.start) {
         if (item.limit <= w.start) reachedDeadline = true;
@@ -749,11 +655,14 @@ export function planWeek({
  * What the *saved* plan does not account for.
  *
  * Deliberately derived from the blocks actually in the database rather than
- * from `planWeek`'s `unplaced`, even though the two usually agree. `unplaced`
- * is a fact about one press of Regenerate; this is a fact about the plan on
+ * from `autoplan`'s `unplaced`, even though the two usually agree. `unplaced`
+ * is a fact about one press of the button; this is a fact about the plan on
  * screen right now, and it stays true after a reload, after a block is
  * dragged away, and after an estimate is raised — the three moments when a
  * planner most wants to quietly stop mentioning the work it dropped.
+ *
+ * It is also what Autoplan itself queues from, so the button places exactly
+ * the work the rail is showing you and never a different list.
  */
 export function unscheduled(
   tasks: PlannableTask[],
@@ -765,8 +674,6 @@ export function unscheduled(
   minutes: number;
   guessed: boolean;
   missed: boolean;
-  /** Deferred by phase 13's agent or by hand. Still owed, just not this week. */
-  deferred: boolean;
 }[] {
   const planned = new Map<string, number>();
   const lapsed = new Set<string>();
@@ -781,9 +688,11 @@ export function unscheduled(
      * it". Nothing deletes it and nothing silently forgives it: the moment a
      * block lapses its minutes stop counting as accounted for, the task
      * reappears in the Unplanned rail carrying exactly what it still needs,
-     * and the next Replan finds it a new hour. The alternative — counting
+     * and the next Autoplan finds it a new hour. The alternative — counting
      * time you demonstrably did not spend — is a planner that quietly reports
-     * a week as handled while the work piles up behind it.
+     * a week as handled while the work piles up behind it. Autoplan reads
+     * this list, so those minutes get offered a new hour the next time it is
+     * pressed.
      */
     if (Date.parse(b.ends_at) <= now) {
       lapsed.add(b.task_id);
@@ -801,14 +710,6 @@ export function unscheduled(
         minutes: Math.round(minutes - (planned.get(t.id) ?? 0)),
         guessed,
         missed: lapsed.has(t.id),
-        /*
-         * Deferred work stays in this list on purpose. The rail is the app's
-         * one honest account of what has no hour against it, and a task that
-         * disappeared from it the moment something said "next week" would be
-         * the planner hiding the work rather than scheduling it. It is shown,
-         * and it is labelled.
-         */
-        deferred: deferred(t, new Date(now)),
       };
     })
     // A minute or two of rounding slack is not an unplanned task. Anything

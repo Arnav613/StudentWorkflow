@@ -18,7 +18,6 @@
 
 import { supabase } from "./supabase";
 import type {
-  Blackout,
   Class,
   CalendarSeries,
   ChecklistItem,
@@ -583,102 +582,6 @@ export async function deleteRoutine(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Blackouts — phase 13
-// ---------------------------------------------------------------------------
-//
-// Hours that are gone and are not a routine and are not work. They never
-// become plan_blocks: the planner reads them as busy and the grid draws them
-// as a band behind everything else, which keeps one row the single answer to
-// "am I out on Wednesday" instead of a row and a block that can disagree.
-//
-// Written only by the planner chat, and only on Accept. There is no hand form
-// for them — see the Week page.
-
-/** Everything from a given instant on. Past blackouts are nobody's business. */
-export async function listBlackouts(from: Date): Promise<Blackout[]> {
-  return unwrap(
-    await supabase
-      .from("blackouts")
-      .select("*")
-      .gte("ends_at", from.toISOString())
-      .order("starts_at"),
-  );
-}
-
-export async function createBlackouts(
-  rows: {
-    user_id: string;
-    starts_at: string;
-    ends_at: string;
-    reason?: string | null;
-  }[],
-): Promise<Blackout[]> {
-  if (!rows.length) return [];
-  return unwrap(await supabase.from("blackouts").insert(rows).select());
-}
-
-// ---------------------------------------------------------------------------
-// Deferring a task — phase 13
-// ---------------------------------------------------------------------------
-
-/**
- * "Not before this date." Null undoes it.
- *
- * Its own function rather than a field on `updateTask`'s patch, because it is
- * the one write in the app that exists solely to instruct the planner, and
- * keeping it separate is what stops a due date and a deferral ever being sent
- * in the same object by accident. The model may propose this; it may not
- * propose `due_at`, and the two must not share a door.
- */
-export async function setPlanSkip(
-  id: string,
-  until: string | null,
-): Promise<Task> {
-  return unwrap(
-    await supabase
-      .from("tasks")
-      .update({ plan_skip_until: until })
-      .eq("id", id)
-      .select()
-      .single(),
-  );
-}
-
-/**
- * Half of it this week, half of it later — as two real cards.
- *
- * The planner already breaks work into ninety-minute sessions on its own, so
- * "split" here cannot mean that. It means the thing genuinely divides: the
- * reading is two hours and one of them is going to happen. So the original
- * keeps its title, its class and its deadline at the smaller estimate, and a
- * second task carries the rest — tickable on its own, countable on its own,
- * and visible on the board rather than hidden inside an estimate that quietly
- * got smaller.
- *
- * Both keep the deadline. The work did not become less due because it became
- * two cards, and writing a later date on the remainder would be the split
- * moving a deadline by the back door.
- */
-export async function splitTask(
-  task: Task,
-  keepMinutes: number,
-  rest: { title: string; minutes: number },
-): Promise<{ kept: Task; created: Task }> {
-  const created = await createTask({
-    user_id: task.user_id,
-    title: rest.title,
-    class_id: task.class_id,
-    due_at: task.due_at,
-    status: task.status,
-    estimate_minutes: Math.max(1, Math.round(rest.minutes)),
-  });
-  const kept = await updateTask(task.id, {
-    estimate_minutes: Math.max(1, Math.round(keepMinutes)),
-  });
-  return { kept, created };
-}
-
-// ---------------------------------------------------------------------------
 // Plan blocks
 // ---------------------------------------------------------------------------
 
@@ -704,42 +607,32 @@ export async function listPlanBlocks(from: Date): Promise<PlanBlock[]> {
 }
 
 /**
- * Replace the generated part of the plan.
+ * Add hours to the plan. Never take any away.
  *
- * Two writes, in this order and no other: every *unlocked* block from `from`
- * onward is deleted, then the freshly planned unlocked blocks are inserted.
- * Locked blocks are never in either statement — they were placed by a person,
- * the planner was given them as input, and it has already planned around them.
+ * This is the whole of Autoplan's write path, and the reason it is an insert
+ * and not a replace. The button used to be Replan, which deleted every
+ * unlocked block from here on and rebuilt the week from scratch — so a plan
+ * you had read, agreed with and half worked through could be silently
+ * rearranged by one press, and the only defence against that was `locked`,
+ * a flag nobody could see and nobody set on purpose.
  *
- * Delete-then-insert rather than a diff. The scheduler is deterministic and
- * plans the whole horizon at once, so there is no stable identity to diff
- * against: a block is not "the same block" moved, it is a different decision
- * about the same task. Reconciling those would be a merge algorithm nobody
- * asked for, and it would be the second implementation of the scheduler.
+ * Autoplan does the smaller, honest thing instead: it looks at what is already
+ * on the grid, treats every hour of it as spoken for, and fills the gaps that
+ * are left with work that had no hour against it. Pressing it can add blocks
+ * to your week. It cannot move one and it cannot remove one. Everything that
+ * takes an hour off the grid is a thing you did — a drag, a delete, or a diff
+ * you accepted.
  */
-export async function replacePlan(
+export async function addPlanBlocks(
   userId: string,
-  from: Date,
   blocks: PlannedBlock[],
 ): Promise<PlanBlock[]> {
-  const { error: delError } = await supabase
-    .from("plan_blocks")
-    .delete()
-    .eq("locked", false)
-    // Event blocks are unlocked but are not the planner's to rewrite: they
-    // mirror Google, and deleting one here would resurrect it — with its
-    // dismissal lost — on the very next refresh.
-    .is("google_event_id", null)
-    .gte("ends_at", from.toISOString());
-  if (delError) throw delError;
-
-  const fresh = blocks.filter((b) => !b.locked);
-  if (!fresh.length) return [];
+  if (!blocks.length) return [];
 
   return unwrap(
     await supabase
       .from("plan_blocks")
-      .insert(fresh.map((b) => ({ ...b, user_id: userId })))
+      .insert(blocks.map((b) => ({ ...b, user_id: userId })))
       .select(),
   );
 }

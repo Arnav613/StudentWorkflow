@@ -33,15 +33,6 @@ export type Task = {
    * says so in italics; a zero would occupy no time and then eat an evening.
    */
   estimate_minutes: number | null;
-  /**
-   * "Not before this date" — the planner's instruction, never the deadline.
-   *
-   * Phase 13. `planWeek` gives a task no hours while this is in the future;
-   * the board, the forecast and `due_at` are untouched, which is the whole
-   * point. Null is the ordinary state, and a date already past means the same
-   * thing, so a deferral expires without anything having to clear it.
-   */
-  plan_skip_until: string | null;
   google_coursework_id: string | null;
   google_course_id: string | null;
   status_overridden: boolean;
@@ -259,23 +250,6 @@ export type RoutineSkip = {
   user_id: string;
   routine_id: string;
   on_date: string;
-  created_at: string;
-};
-
-/**
- * An hour that is neither work nor a routine — phase 13, migration 0012.
- *
- * "Out on Wednesday afternoon." A routine repeats and a task gets ticked off;
- * this does neither, which is why it is not either of them. The planner reads
- * it as busy time and nothing else reads it at all.
- */
-export type Blackout = {
-  id: string;
-  user_id: string;
-  starts_at: string;
-  ends_at: string;
-  /** Shown on the grid when it is there. Null draws as plain "Blocked". */
-  reason: string | null;
   created_at: string;
 };
 
