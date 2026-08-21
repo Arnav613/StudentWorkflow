@@ -18,12 +18,13 @@
     />
 
     <!--
-      An SVG favicon: one file, sharp at every size. The .ico is the fallback
-      for browsers that ignore SVG icons; theme-color tints the address bar on
-      mobile, which is the cheapest "this is an app" signal there is.
+      An SVG favicon: one file, sharp at every size. iOS ignores SVG for the
+      home-screen icon, so that one is a raster export of the same mark;
+      theme-color tints the address bar on mobile, which is the cheapest
+      "this is an app" signal there is.
     -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0e0e11" media="(prefers-color-scheme: dark)" />
 
