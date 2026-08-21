@@ -26,6 +26,12 @@ def client_config(settings: Settings = Depends(get_settings)) -> dict:
     button. It lives on the server so turning it off during a Google outage
     is an env var on Render, not a frontend redeploy.
 
+    `push_enabled` is the third of the same kind: the flag and both VAPID
+    keys. False hides the reminders control outright, which matters more here
+    than elsewhere — a browser grants notification permission once, and a
+    prompt raised by a deployment that cannot actually deliver spends it for
+    nothing.
+
     `ai_enabled` is the same idea for phase 09, and it reports readiness
     rather than the flag: a deployment with the switch on and no Gemini key
     would otherwise show a Summarise button that can only ever 503.
@@ -33,6 +39,7 @@ def client_config(settings: Settings = Depends(get_settings)) -> dict:
     return {
         "classroom_enabled": settings.classroom_enabled,
         "ai_enabled": settings.ai_ready,
+        "push_enabled": settings.push_ready,
         "allowed_email_domain": settings.allowed_email_domain,
     }
 

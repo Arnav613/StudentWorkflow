@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { signOut } from "../lib/supabase";
+import NotificationToggle from "./NotificationToggle";
 
 /**
  * The account control: an initial, and a menu behind it.
@@ -11,7 +12,14 @@ import { signOut } from "../lib/supabase";
  * away, because "which account am I in" is a real question when a university
  * hands out two.
  */
-export default function AccountMenu({ email }: { email: string }) {
+export default function AccountMenu({
+  email,
+  pushEnabled,
+}: {
+  email: string;
+  /** Server-side readiness. False renders no reminders control at all. */
+  pushEnabled: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
 
@@ -52,6 +60,7 @@ export default function AccountMenu({ email }: { email: string }) {
             <span className="menu-label">Signed in as</span>
             <span className="menu-email">{email}</span>
           </div>
+          {pushEnabled && <NotificationToggle />}
           <button className="menu-item" role="menuitem" onClick={() => signOut()}>
             Sign out
           </button>

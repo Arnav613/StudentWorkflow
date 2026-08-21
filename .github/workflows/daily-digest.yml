@@ -1,0 +1,76 @@
+# The morning digest — one push notification a day, per device.
+#
+# Hourly, not daily, and that is not a mistake. The hour that matters is 8am
+# *where the phone is*, and the subscription row is the only thing that knows
+# where that is. So this ticks every hour and the backend asks each device
+# whether it is its morning; twenty-three of the twenty-four runs do a single
+# query and stop. See backend/app/services/digest.py.
+#
+# Offset from the Classroom sync's :17 so the two are never contending for the
+# same cold dyno. It is also deliberately *after* it: a digest sent at 8am
+# should reflect the assignment Classroom picked up at 7:17, not miss it by
+# forty minutes.
+#
+# Same standing caveat as the sync workflow: GitHub disables scheduled
+# workflows in a repo with no commits for 60 days. If the notifications go
+# quiet in the middle of a term, check the Actions tab before suspecting the
+# push code.
+
+name: Daily digest
+
+on:
+  schedule:
+    - cron: "47 * * * *"
+  workflow_dispatch: # to force a run while debugging
+
+# Calls one HTTP endpoint, checks out nothing, and has no use for a repository
+# token. See the same block in classroom-sync.yml.
+permissions: {}
+
+concurrency:
+  # Two digest passes racing would, in the worst case, send the same person
+  # the same notification twice. The `tag` in the payload means the second
+  # replaces the first on the phone rather than stacking — but not sending it
+  # is better than relying on that.
+  group: daily-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the backend
+        # Render's free tier sleeps and the cold start can outlast a short
+        # timeout. Failure is ignored: a slow /health is the normal case this
+        # step exists to absorb, not a reason to skip the digest.
+        run: curl -sS --max-time 120 "${{ secrets.API_URL }}/health" || true
+
+      - name: Send to whoever it is 8am for
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          # --fail-with-body, not --fail: when this breaks, the FastAPI detail
+          # string is the entire diagnosis, and plain --fail throws it away.
+          # A 503 here means PUSH_ENABLED or the VAPID keys are unset on
+          # Render, which is the expected state until they are configured.
+          curl -sS --fail-with-body --max-time 300 \
+            -X POST "$API_URL/push/cron/digest" \
+            -H "X-Cron-Secret: $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            | tee report.json
+          echo
+
+      - name: Fail the run if any device errored
+        # The endpoint returns 200 with a per-device error list — one dead
+        # subscription must not abort the other nineteen sends. That means the
+        # HTTP status cannot be the whole story, and without this step a
+        # morning where nobody was reachable would show a green tick.
+        run: |
+          set -euo pipefail
+          errors=$(python3 -c "import json;print(len(json.load(open('report.json'))['errors']))")
+          if [ "$errors" -gt 0 ]; then
+            echo "::error::$errors subscription(s) failed — see the report above"
+            exit 1
+          fi

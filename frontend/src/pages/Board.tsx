@@ -28,7 +28,13 @@ const NotesPanel = lazy(() => import("../components/NotesPanel"));
 type BackendState =
   | { kind: "idle" }
   | { kind: "checking" }
-  | { kind: "ok"; email: string; classroomEnabled: boolean; aiEnabled: boolean }
+  | {
+      kind: "ok";
+      email: string;
+      classroomEnabled: boolean;
+      aiEnabled: boolean;
+      pushEnabled: boolean;
+    }
   | { kind: "error"; message: string };
 
 /**
@@ -218,7 +224,10 @@ export default function Board({
           </nav>
 
           <span className="spacer" />
-          <AccountMenu email={session.user.email ?? ""} />
+          <AccountMenu
+            email={session.user.email ?? ""}
+            pushEnabled={backend.kind === "ok" && backend.pushEnabled}
+          />
         </div>
       </header>
 

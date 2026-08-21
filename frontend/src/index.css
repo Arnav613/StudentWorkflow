@@ -2118,7 +2118,10 @@ button.link.danger:hover:not(:disabled) {
   /* The window, less the furniture above it. `max` keeps the chart usable on
      a short laptop screen, where the alternative is a fifteen-hour day
      squeezed into four hundred pixels and every block a stripe. */
-  --fit: max(30rem, calc(100vh - 13rem));
+  /* dvh, not vh: on a phone `100vh` is the viewport with the address bar
+     *hidden*, so the grid is taller than the screen until you scroll and the
+     last hour of the day sits permanently under the chrome. */
+  --fit: max(30rem, calc(100dvh - 13rem));
   overflow: visible;
   padding-bottom: 0.35rem;
 }
@@ -2777,7 +2780,7 @@ button.link.danger:hover:not(:disabled) {
 
 @media (max-width: 40rem) {
   .week-scroll {
-    --fit: max(24rem, calc(100vh - 16rem));
+    --fit: max(24rem, calc(100dvh - 16rem));
   }
   .week-grid {
     grid-template-columns: auto repeat(7, minmax(5.5rem, 1fr));
@@ -3873,4 +3876,160 @@ button.link.danger:hover:not(:disabled) {
 .section-finished {
   margin-top: 0.5rem;
   opacity: 0.85;
+}
+
+/* ---------------------------------------------------------------------------
+   On a phone
+   -------------------------------------------------------------------------
+
+   The rules the rest of this file could not express, because they are not
+   about width. A narrow window on a laptop and an installed app on an iPhone
+   are the same number of pixels and want different things — the first has a
+   cursor, an address bar and no notch.
+
+   Everything here is additive and scoped: a coarse pointer, a display mode,
+   or a safe-area inset that is zero on every device that does not have one.
+   Nothing on a desktop screen changes.
+   ------------------------------------------------------------------------ */
+
+/*
+ * The notch, the rounded corners and the home indicator.
+ *
+ * index.html sets viewport-fit=cover, which lets the page paint into all
+ * three. That is what makes the app look like an app rather than a web page
+ * in a frame — and it means every edge that content reaches has to pay the
+ * inset back itself. These four are the only such edges: the sticky bar at
+ * the top and the scrolling page at the bottom.
+ *
+ * env() returns 0 where there is no inset, so this costs nothing everywhere
+ * else and needs no media query.
+ */
+.topbar-inner {
+  padding-left: max(2rem, env(safe-area-inset-left));
+  padding-right: max(2rem, env(safe-area-inset-right));
+}
+
+.page {
+  padding-left: max(2rem, env(safe-area-inset-left));
+  padding-right: max(2rem, env(safe-area-inset-right));
+  /* The home indicator sits over the last ~34px. The existing 5rem of bottom
+     padding covers it on its own; this only guarantees it. */
+  padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+}
+
+@media (max-width: 40rem) {
+  .topbar-inner {
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+  .page {
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+    padding-bottom: calc(3rem + env(safe-area-inset-bottom));
+  }
+}
+
+/*
+ * Installed, the status bar is drawn *over* the page — that is what
+ * black-translucent means — so the top bar has to clear it itself. In a
+ * browser tab the inset is zero and this collapses to the padding it already
+ * had.
+ */
+@media (display-mode: standalone) {
+  .topbar-inner {
+    padding-top: calc(0.8rem + env(safe-area-inset-top));
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Touch
+   -------------------------------------------------------------------------*/
+
+@media (hover: none) and (pointer: coarse) {
+  /*
+   * 16px is not a style choice. Below it, iOS Safari zooms the whole page in
+   * when an input takes focus and does not zoom back out — which on a form
+   * with several fields leaves the app scrolled sideways and the person
+   * pinching to recover. Every text control, once, here rather than scattered
+   * through the file.
+   */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /*
+   * 44px is Apple's minimum target and roughly the width of an adult
+   * fingertip. Applied as a floor via min-height rather than padding so
+   * nothing that is already big enough moves.
+   */
+  .tab,
+  .menu-item,
+  .avatar {
+    min-height: 44px;
+  }
+
+  .tab {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /*
+   * Four tabs, an account avatar and a wordmark do not fit across 360px, and
+   * the failure mode of flex is to crush the labels rather than to hide them.
+   * Scrolling the tab strip keeps every label readable and every tab
+   * reachable; the scrollbar is hidden because a horizontal bar under a row
+   * of pills reads as a bug rather than an affordance.
+   */
+  .tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+    /* Snap so a half-scrolled pill does not sit under the fade. */
+    scroll-snap-type: x proximity;
+  }
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .tabs .tab {
+    flex: none;
+    scroll-snap-align: center;
+  }
+
+  /*
+   * The grey flash iOS paints over a tapped element. It fires on divs and
+   * list rows that are not buttons at all, which makes an ordinary scroll
+   * that starts on a card look like a mis-tap. Real buttons keep their own
+   * :active styles, which are drawn by this file and not by the platform.
+   */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Reminders, in the account menu
+   -------------------------------------------------------------------------*/
+
+/*
+ * A group inside the menu, separated from Sign out by a rule rather than by
+ * spacing: the two are different kinds of thing, and the destructive one
+ * should not be adjacent to a switch people will toggle twice while deciding.
+ */
+.menu-note {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.menu-note p {
+  margin: 0.15rem 0.6rem 0.5rem;
+  /* The install and blocked explanations are two lines of prose in a menu
+     sized for one-word items. Without this they set the menu's width. */
+  max-width: 20rem;
+}
+
+.menu-item.subtle {
+  color: var(--muted);
+  font-weight: 400;
 }

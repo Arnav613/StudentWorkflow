@@ -58,3 +58,29 @@ services:
       # for an instant fix, then bring this line along with it.
       - key: GEMINI_MODEL
         value: gemini-3.6-flash
+      # --- Push, phase 12 -------------------------------------------------
+      # The morning digest. Same "readiness, not the flag" rule as AI above:
+      # the frontend hides the reminders control unless this and both VAPID
+      # keys are set, because a browser grants notification permission once
+      # and a prompt from a deployment that cannot deliver spends it for
+      # nothing.
+      - key: PUSH_ENABLED
+        value: "true"
+      # Generate the pair once with `python scripts/vapid.py` in backend/.
+      # Not a rotatable secret: the public half is embedded in every
+      # subscription a browser has already created, so changing it invalidates
+      # every row in push_subscriptions and every device must be re-enabled by
+      # hand. Both are set in the dashboard — the public key is not sensitive,
+      # but keeping the pair together is what stops half of it being replaced.
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      # Contact address for the push services, required by the VAPID spec.
+      - key: VAPID_SUBJECT
+        value: mailto:gupta.arnav006@gmail.com
+      # Local hour the digest is sent, in each device's own timezone. The
+      # GitHub Action ticks hourly and this is the hour it matches, so moving
+      # the notification is one env var rather than a cron expression.
+      - key: DIGEST_HOUR
+        value: "8"

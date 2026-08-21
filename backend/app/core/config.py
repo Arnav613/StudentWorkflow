@@ -77,6 +77,30 @@ class Settings(BaseSettings):
     # go dark all at once, read the message before changing anything else.
     gemini_model: str = "gemini-3.6-flash"
 
+    # --- Push ---------------------------------------------------------------
+    # Web Push, for the morning digest. Off unless the flag and both VAPID
+    # halves are present — the same "readiness, not the flag" rule as AI, and
+    # for the same reason: a browser that is offered a notification prompt and
+    # then cannot be delivered to has spent the one permission request it gets.
+    #
+    # The key pair identifies *this server* to Mozilla's and Google's push
+    # services. Generate once with `python scripts/vapid.py` and never rotate
+    # casually: the public half is baked into every subscription a browser has
+    # already created, so a new pair invalidates every row in
+    # push_subscriptions and every device has to be re-enabled by hand.
+    push_enabled: bool = False
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    # A mailto: the push service can reach if this server starts misbehaving.
+    # Required by the VAPID spec; some services reject pushes without it.
+    vapid_subject: str = "mailto:gupta.arnav006@gmail.com"
+
+    # Local hour at which the digest is sent, in each subscription's own
+    # timezone. The GitHub Action ticks hourly and this is the hour it
+    # matches, so moving the notification is one env var rather than a cron
+    # expression in a workflow file.
+    digest_hour: int = 8
+
     # --- Cron ---------------------------------------------------------------
     # Shared secret for POST /classroom/cron/sync. The hourly GitHub Action is
     # the only caller and has no user session to present, so this is the whole
@@ -89,6 +113,11 @@ class Settings(BaseSettings):
     def ai_ready(self) -> bool:
         """The flag *and* a key. Either alone is a promise the app cannot keep."""
         return self.ai_enabled and bool(self.gemini_api_key)
+
+    @property
+    def push_ready(self) -> bool:
+        """The flag *and* both keys. See ai_ready — same rule, same reason."""
+        return self.push_enabled and bool(self.vapid_public_key) and bool(self.vapid_private_key)
 
     @property
     def term_filters(self) -> list[str]:

@@ -2,7 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      viewport-fit=cover lets the page paint under the notch and the home
+      indicator; every fixed edge in index.css pays that back with an
+      env(safe-area-inset-*) pad. Without the cover, iOS letterboxes the app
+      in standalone mode and the result reads as a web page in a frame rather
+      than an app. interactive-widget keeps the layout viewport still when the
+      keyboard opens, so a focused input does not shove the header off screen.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
 
     <!--
       Geist, in the two weights the app actually uses. Preconnect because the
@@ -25,6 +36,26 @@
     -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!--
+      The manifest is what makes this installable: Android reads it for the
+      install prompt, the icon and the standalone display mode. iOS reads
+      parts of it too now, but still honours the two apple- meta tags below,
+      and Add to Home Screen there is a manual gesture no site can trigger.
+
+      `apple-mobile-web-app-title` is separate from the manifest's short_name
+      and wins on iOS — without it the home-screen label comes from <title>,
+      which lib/title.ts rewrites per view, so the icon would be named after
+      whichever screen happened to be open when it was added.
+
+      black-translucent draws the status bar over the page, which is what
+      viewport-fit=cover above is for.
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Dashboard" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0e0e11" media="(prefers-color-scheme: dark)" />
 

@@ -14,6 +14,10 @@ import App from "./App";
  */
 import "@blocknote/core/fonts/inter.css";
 import "./index.css";
+import { registerServiceWorker } from "./lib/pwa";
+
+// Before render, but the registration itself waits for `load` — see lib/pwa.
+registerServiceWorker();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

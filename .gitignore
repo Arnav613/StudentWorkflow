@@ -11,3 +11,6 @@ dist/
 # Secrets. One .env at the repo root, never committed.
 .env
 .env.*
+
+# Supabase CLI scratch (the linked project ref, re-created on link).
+supabase/.temp/

@@ -12,3 +12,8 @@ cryptography>=44.0
 # Page selection for the documents sent to the model. Pure Python on purpose:
 # a wheel that has to compile is a deploy that can fail on a free dyno.
 pypdf>=5.1
+# Web Push payload encryption, RFC 8188 + RFC 8291. This is the library
+# pywebpush wraps; used directly so the send itself can be one httpx POST
+# rather than dragging requests and aiohttp onto a free dyno. See
+# app/services/push.py. Pure Python on top of cryptography, already here.
+http-ece>=1.2.1

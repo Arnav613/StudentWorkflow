@@ -51,6 +51,13 @@ export type ClientConfig = {
    * Connect Classroom button has followed since phase 02.
    */
   ai_enabled: boolean;
+  /**
+   * The flag *and* both VAPID keys, decided on the server. False hides the
+   * reminders control entirely — a browser grants notification permission
+   * once, and a prompt raised by a deployment that cannot deliver spends
+   * that one chance for nothing.
+   */
+  push_enabled: boolean;
   allowed_email_domain: string;
 };
 
