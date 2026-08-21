@@ -42,11 +42,42 @@ export type Toast = {
   message: string;
   /** Present only while an undoable action is still cancellable. */
   undo?: () => void;
+  /**
+   * Which page this was raised on. Ctrl+Z only reaches the current one; the
+   * Undo button on an older toast still works, because clicking a button you
+   * can see is a deliberate act in a way that a reflexive keystroke is not.
+   */
+  epoch: number;
   /** ms until it disappears on its own. */
   duration: number;
 };
 
 type Listener = (toasts: Toast[]) => void;
+
+let epoch = 0;
+
+/**
+ * Start a new undo scope. Called on every navigation: an in-flight delete
+ * from the page you just left is still cancellable by its own button, but it
+ * is no longer what Ctrl+Z means here.
+ */
+export function newUndoEpoch() {
+  epoch++;
+}
+
+/**
+ * Cancel the newest still-pending action from this page. Returns whether
+ * there was one, so a caller can leave the keystroke to the browser if not.
+ *
+ * `toasts` is newest-first, so the first match is the most recent thing the
+ * user did — which is the only thing Ctrl+Z is ever expected to mean.
+ */
+export function undoLast(): boolean {
+  const t = toasts.find((x) => x.undo && x.epoch === epoch);
+  if (!t) return false;
+  t.undo!();
+  return true;
+}
 
 let toasts: Toast[] = [];
 const listeners = new Set<Listener>();
@@ -72,12 +103,12 @@ export function dismiss(id: number) {
   emit();
 }
 
-function push(t: Omit<Toast, "id">): number {
+function push(t: Omit<Toast, "id" | "epoch">): number {
   const id = nextId++;
   // Newest first, and capped. A failing autosave can fire repeatedly, and a
   // stack that grows without limit would cover the document it is complaining
   // about.
-  toasts = [{ ...t, id }, ...toasts].slice(0, 4);
+  toasts = [{ ...t, id, epoch }, ...toasts].slice(0, 4);
   emit();
   if (t.duration > 0) window.setTimeout(() => dismiss(id), t.duration);
   return id;

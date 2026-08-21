@@ -9,6 +9,7 @@ import ClassDetail from "./ClassDetail";
 import AccountMenu from "../components/AccountMenu";
 import Logo from "../components/Logo";
 import { useTitle } from "../lib/title";
+import { newUndoEpoch } from "../lib/toast";
 import {
   BoardSkeleton,
   ClassGridSkeleton,
@@ -106,6 +107,14 @@ export default function Board({
     window.addEventListener("hashchange", onPop);
     return () => window.removeEventListener("hashchange", onPop);
   }, []);
+
+  // Ctrl+Z means "take back what I just did *here*". Leaving a page ends
+  // that scope: an in-flight delete keeps its own Undo button, but the
+  // keystroke no longer reaches back across a navigation to a row the new
+  // page isn't showing. Keyed on `view` so back/forward counts too.
+  useEffect(() => {
+    newUndoEpoch();
+  }, [view]);
 
   function go(next: View, replace = false) {
     const hash = viewToHash(next);
