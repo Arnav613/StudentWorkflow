@@ -8,7 +8,7 @@
  * React tree.
  */
 
-import type { HealthTask, Task, TaskStatus } from "./types";
+import type { Class, HealthTask, Task, TaskGroup, TaskStatus } from "./types";
 
 export const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: "todo", label: "Do" },
@@ -66,6 +66,107 @@ export function groupByColumn(
     out[key] = sortColumn(out[key], now);
   }
   return out;
+}
+
+/* ---------------------------------------------------------------------------
+   Grouping
+   ---------------------------------------------------------------------------
+   Two ways of clustering the same cards, and neither of them changes a task.
+   That is worth stating in the file rather than only in the schema: a group is
+   a label, and the Week is drawn from estimates and blocks, so nothing here
+   can reach it. Grouping eleven readings is a change to how a list reads and
+   to nothing else.
+   ------------------------------------------------------------------------ */
+
+/** A row of the board: a loose card, or a group with its cards under it. */
+export type BoardRow =
+  | { kind: "task"; task: Task }
+  | { kind: "group"; group: TaskGroup; tasks: Task[] };
+
+/**
+ * Cluster an already-sorted list into rows.
+ *
+ * A group appears where its *first* card would have appeared, and takes the
+ * rest of its cards with it. In place, rather than lifted to the top of the
+ * column: the sort above is a promise that the most urgent thing is nearest
+ * the eye, and floating every group over it would break that promise for the
+ * one person who groups things — which is the person with the most on.
+ *
+ * A group whose cards are all elsewhere (another column, another class) does
+ * not appear at all. An empty group header is a claim that something is here.
+ */
+export function cluster(
+  sorted: Task[],
+  groups: Map<string, TaskGroup>,
+): BoardRow[] {
+  const rows: BoardRow[] = [];
+  const at = new Map<string, { kind: "group"; group: TaskGroup; tasks: Task[] }>();
+
+  for (const task of sorted) {
+    const group = task.group_id ? groups.get(task.group_id) : undefined;
+    if (!group) {
+      rows.push({ kind: "task", task });
+      continue;
+    }
+    const open = at.get(group.id);
+    if (open) {
+      open.tasks.push(task);
+      continue;
+    }
+    const row = { kind: "group" as const, group, tasks: [task] };
+    at.set(group.id, row);
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+/** One class's worth of the board, for the by-class view. */
+export type ClassSection = {
+  /** Null is the section for work that belongs to no course. */
+  cls: Class | null;
+  live: Task[];
+  done: Task[];
+};
+
+/**
+ * The board split by class instead of by status.
+ *
+ * Sections come in the order the class grid shows them — by name — with
+ * everything unattached last, because "no class" is not a course and putting
+ * it among them alphabetically would read as one.
+ *
+ * Within a section the three statuses collapse to two: live work in due order,
+ * and everything finished tucked behind one line. Someone who asked to see
+ * this term by course is asking what is left in each one, and a Done column
+ * repeated six times answers a question nobody asked.
+ */
+export function byClass(tasks: Task[], classes: Class[], now = Date.now()): ClassSection[] {
+  const named = [...classes].sort((a, b) => a.name.localeCompare(b.name));
+  const sections: ClassSection[] = [];
+  const index = new Map<string, ClassSection>();
+
+  for (const cls of named) {
+    const section: ClassSection = { cls, live: [], done: [] };
+    index.set(cls.id, section);
+    sections.push(section);
+  }
+  const loose: ClassSection = { cls: null, live: [], done: [] };
+
+  for (const task of tasks) {
+    const section = (task.class_id && index.get(task.class_id)) || loose;
+    (task.status === "done" ? section.done : section.live).push(task);
+  }
+
+  for (const section of [...sections, loose]) {
+    section.live = sortColumn(section.live, now);
+    section.done = sortColumn(section.done, now);
+  }
+
+  // A class with nothing in it at all is left out. The Classes tab is where
+  // you go to see every course you are taking; this is where you go to see
+  // what each one is still asking of you, and six empty headers is a wall.
+  return [...sections, loose].filter((s) => s.live.length || s.done.length);
 }
 
 /**

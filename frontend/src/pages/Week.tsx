@@ -20,6 +20,7 @@ import { getCalendar } from "../lib/api";
 import { errorText, toast, undoable } from "../lib/toast";
 import { formatDue } from "../lib/board";
 import {
+  DEFAULT_ESTIMATE_MINUTES,
   PLAN_DAYS,
   SLOT_MINUTES,
   addDays,
@@ -305,7 +306,26 @@ export default function WeekPage({
 
   /* --- What goes where ---------------------------------------------------- */
 
-  const onBoard = planBlocks.filter((b) => !b.dismissed);
+  /*
+   * What the chart draws.
+   *
+   * Dismissed lectures are out, as they always were. Work whose task is
+   * finished is out too, and that is new: a block is an hour you have set
+   * aside to do something, and once the something is done the hour is not a
+   * plan any more, it is a receipt. Leaving them drawn meant marking eleven
+   * readings done on the board and then looking at a week still solidly
+   * booked with them — the screen contradicting the screen next to it.
+   *
+   * Hidden, and never deleted. The rows stay exactly where they are, so a task
+   * dragged back out of Done comes back to the week with its hours intact and
+   * nothing to re-plan. That is the difference between finishing something and
+   * changing your mind about it, and it is not the app's to guess.
+   */
+  const onBoard = planBlocks.filter(
+    (b) =>
+      !b.dismissed &&
+      !(b.task_id && taskById.get(b.task_id)?.status === "done"),
+  );
   const blocksByDay = byDay(onBoard, days);
 
   /**
@@ -513,7 +533,8 @@ export default function WeekPage({
         tasks: rows,
         // Everything on the board, of every kind — lectures, routines and
         // work alike. A dismissed lecture is excluded upstream, because it is
-        // an hour you got back.
+        // an hour you got back; so is an hour set aside for work that is now
+        // finished, for the same reason.
         placed: onBoard,
         from: new Date(),
         days: DAYS,
@@ -938,6 +959,41 @@ export default function WeekPage({
       setPlanBlocks(previousBlocks);
       toast(errorText(e, "Could not change those"), "error");
     }
+  }
+
+  /**
+   * Delete one task from the block that represents it.
+   *
+   * The distinction Unplan and Delete draw for a selection, drawn again for
+   * one: dragging a block to the rail says "not this hour", and this says "not
+   * at all". Both are needed here and neither can stand in for the other —
+   * before this existed, a task could only be deleted from the board, which
+   * meant leaving the screen you noticed it on and finding it again among
+   * everything else you are taking.
+   *
+   * Five seconds of undo, no dialog, and the block goes at once. Same contract
+   * as every other delete in the app.
+   */
+  function deleteTask(task: Task) {
+    const previousTasks = tasks;
+    const previousBlocks = planBlocks;
+    setOpenId(null);
+    undoable({
+      message: `Deleted "${task.title}"`,
+      apply: () => {
+        setTasks((prev) => prev.filter((t) => t.id !== task.id));
+        // The database cascades plan_blocks.task_id itself, but not until the
+        // grace period is up, and a block drawn against a deleted task is a
+        // ghost for as long as it stands.
+        setPlanBlocks((prev) => prev.filter((b) => b.task_id !== task.id));
+      },
+      commit: () => db.deleteTask(task.id),
+      revert: () => {
+        setTasks(previousTasks);
+        setPlanBlocks(previousBlocks);
+      },
+      onError: () => toast("The task is still there", "info"),
+    });
   }
 
   /**
@@ -1527,6 +1583,89 @@ export default function WeekPage({
     }
   }
 
+  /* --- Writing something new straight onto the week ---------------------- */
+
+  /**
+   * A slot somebody clicked an empty part of, waiting for a name.
+   *
+   * The week used to be a place work arrived at and never a place it started,
+   * which is exactly backwards from how a week is actually decided: half of
+   * what goes into one is thought of while looking at the gap it would fill.
+   * The old answer was to go to the board, add a task, come back, find it in
+   * the rail and drag it to the hour you were already pointing at.
+   */
+  const [adding, setAdding] = useState<{ index: number; startMin: number } | null>(
+    null,
+  );
+
+  /**
+   * Where a click on empty track means, or nothing.
+   *
+   * The same arithmetic a drop runs — see `resolveDrop` — because they are the
+   * same question asked with a different gesture, and two answers to it would
+   * be two grids. Snapped to a slot, floored at now on today: an hour that has
+   * gone is not somewhere to put work, and offering a form for it would only
+   * be a refusal one keystroke later.
+   */
+  function openSlot(index: number, cursorMin: number) {
+    const day = days[index];
+    if (!day) return;
+    const floorMin = isToday(day)
+      ? Math.max(GRID_START_MIN, minutesFrom(day, new Date(snapUp(Date.now()))))
+      : GRID_START_MIN;
+    const startMin = Math.max(floorMin, snapToSlot(cursorMin));
+    // Past the top of the axis there is no evening left to plan into.
+    if (startMin >= GRID_START_MIN + span) return;
+    setOpenId(null);
+    setAdding({ index, startMin });
+  }
+
+  /**
+   * Write it down, and give it the hour it was written into.
+   *
+   * Two rows, in this order and not the other: the task is the thing that
+   * exists, the block is a decision about when to do it. A block written first
+   * and orphaned by a failed task insert would be an hour on the chart
+   * belonging to nothing at all.
+   *
+   * The block is locked, like every placement made by hand. Somebody chose
+   * this hour while looking at the day around it; Autoplan works around it
+   * rather than treating it as one of its own guesses to reshuffle.
+   */
+  async function addAt(
+    index: number,
+    startMin: number,
+    input: { title: string; classId: string; estimate: number | null },
+  ) {
+    const day = days[index];
+    const title = input.title.trim();
+    if (!day || !title) return;
+
+    const starts = instantOf(day, startMin);
+    const minutes = sitting(input.estimate ?? DEFAULT_ESTIMATE_MINUTES);
+    const ends = new Date(starts.getTime() + minutes * 60_000);
+
+    setAdding(null);
+    try {
+      const task = await db.createTask({
+        user_id: userId,
+        title,
+        class_id: input.classId || null,
+        estimate_minutes: input.estimate,
+      });
+      await db.createTaskBlock({
+        user_id: userId,
+        task_id: task.id,
+        starts_at: starts.toISOString(),
+        ends_at: ends.toISOString(),
+      });
+      await refresh();
+      toast(`"${title}" added at ${clockOf(starts.toISOString())}`, "success");
+    } catch (e) {
+      toast(errorText(e, "Could not add that"), "error");
+    }
+  }
+
   /* --- The screen ---------------------------------------------------------*/
 
   /*
@@ -1556,6 +1695,12 @@ export default function WeekPage({
             {plannedMinutes
               ? `${formatMinutes(plannedMinutes)} of work planned across the next seven days`
               : "Nothing planned yet. Autoplan, at the foot of the Unplanned list, finds hours for it."}
+          </p>
+          {/* Said once, in small type, because it is a gesture rather than a
+              feature: there is no button for it and there should not be, but
+              nobody clicks empty space on the off chance. */}
+          <p className="muted small">
+            Click an empty hour to write something straight onto that day.
           </p>
         </div>
         <div className="row week-actions">
@@ -1653,7 +1798,23 @@ export default function WeekPage({
                     ? { startMin: preview.startMin, minutes: preview.minutes }
                     : null
                 }
+                onPick={(cursorMin) => openSlot(i, cursorMin)}
               >
+                {/* The form opens at the hour it was clicked, inside the
+                    column, at the height the block will occupy. A dialog in
+                    the middle of the screen would have made you remember which
+                    Tuesday you meant. */}
+                {adding?.index === i && (
+                  <SlotForm
+                    day={day}
+                    startMin={adding.startMin}
+                    span={span}
+                    classes={classes.filter((c) => !c.hidden)}
+                    onCancel={() => setAdding(null)}
+                    onAdd={(input) => void addAt(i, adding.startMin, input)}
+                  />
+                )}
+
                 {shown[i].map((p) => (
                   <BlockBar
                     key={p.item.id}
@@ -1691,6 +1852,7 @@ export default function WeekPage({
                     onLinkSeries={(id) => void linkSeries(p.item, id)}
                     onRetime={(t) => void retime(p.item, t)}
                     onResize={(t) => void resize(p.item, t)}
+                    onDeleteTask={deleteTask}
                     onOpenClass={onOpenClass}
                   />
                 ))}
@@ -1888,6 +2050,7 @@ function DayColumn({
   span,
   register,
   ghost,
+  onPick,
   children,
 }: {
   day: Date;
@@ -1898,10 +2061,40 @@ function DayColumn({
   register: (el: HTMLElement | null) => void;
   /** Where the thing in the air would land, or null if it is elsewhere. */
   ghost: { startMin: number; minutes: number } | null;
+  /** A click on empty track, as a time on this day's axis. */
+  onPick: (cursorMin: number) => void;
   children: React.ReactNode;
 }) {
   const today = isToday(day);
   const { setNodeRef, isOver } = useDroppable({ id: `day:${index}` });
+  const track = useRef<HTMLElement | null>(null);
+  const down = useRef<{ x: number; y: number } | null>(null);
+
+  /*
+   * A click on the empty part of a day is an hour, and an offer to fill it.
+   *
+   * Guarded twice, because this element is also the drop target for every drag
+   * on the screen. A press that travelled more than a few pixels was a drag and
+   * its click is the tail of it, not a new gesture; a press that landed on a
+   * block belongs to the block. Neither guard is optional — without the first,
+   * every drop would end by opening a form over the thing you just moved.
+   */
+  function onClick(e: React.MouseEvent) {
+    const from = down.current;
+    down.current = null;
+    if (!from) return;
+    if (Math.abs(e.clientX - from.x) > 4 || Math.abs(e.clientY - from.y) > 4) return;
+    if ((e.target as HTMLElement).closest(".bar, .add-pop")) return;
+
+    const el = track.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.height) return;
+    // The same reading a drop takes: height inside the column is a time, off
+    // the same axis the blocks are drawn against, measured from the foot.
+    const fromFoot = (rect.bottom - e.clientY) / rect.height;
+    onPick(GRID_START_MIN + fromFoot * span);
+  }
 
   return (
     <section className={`day-col${today ? " today" : ""}`}>
@@ -1913,8 +2106,13 @@ function DayColumn({
         ref={(el) => {
           setNodeRef(el);
           register(el);
+          track.current = el;
         }}
         className={`day-track${isOver ? " over" : ""}`}
+        onPointerDown={(e) => {
+          down.current = { x: e.clientX, y: e.clientY };
+        }}
+        onClick={onClick}
       >
         {/* The rules, repeated per column rather than laid across the grid.
             A single set of lines behind seven columns cannot pass *behind* a
@@ -1959,6 +2157,108 @@ function DayColumn({
 }
 
 /**
+ * The form that opens where you clicked an empty hour.
+ *
+ * Three fields, and two of them optional. A title is the only thing the app
+ * genuinely cannot supply — the class can be picked later on the board and an
+ * unestimated task is planned against its class's median and says so — and a
+ * form that asked for six things at the moment somebody thought of one would
+ * be a form nobody finishes. The hour itself is already answered: it is where
+ * the click was, and it is printed at the top so it can be checked without
+ * being retyped.
+ *
+ * It produces a real task, not a floating appointment. That is the whole point
+ * of it being here: something written onto Thursday afternoon is on the To do
+ * board a second later, counts towards the term, and can be marked done from
+ * either screen — as opposed to a note in the shape of a calendar entry that
+ * only this grid knows about.
+ */
+function SlotForm({
+  day,
+  startMin,
+  span,
+  classes,
+  onAdd,
+  onCancel,
+}: {
+  day: Date;
+  startMin: number;
+  span: number;
+  classes: Class[];
+  onAdd: (input: { title: string; classId: string; estimate: number | null }) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [classId, setClassId] = useState("");
+  const [estimate, setEstimate] = useState<number | null>(null);
+  const minutes = sitting(estimate ?? DEFAULT_ESTIMATE_MINUTES);
+
+  /*
+   * Escape closes it, and a click anywhere else does too — the same contract
+   * a block's own panel keeps, because on this screen they are the same kind
+   * of thing: something open over a column that must not need finding a small
+   * button to be rid of.
+   */
+  const box = useRef<HTMLFormElement | null>(null);
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      if (!box.current?.contains(e.target as Node)) onCancel();
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    const t = setTimeout(() => {
+      document.addEventListener("pointerdown", away);
+      document.addEventListener("keydown", esc);
+    });
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("pointerdown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [onCancel]);
+
+  return (
+    <form
+      ref={box}
+      className={`add-pop${(startMin - GRID_START_MIN) / span > 0.55 ? " vflip" : ""}`}
+      style={{ bottom: `${((startMin - GRID_START_MIN) / span) * 100}%` }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (title.trim()) onAdd({ title, classId, estimate });
+      }}
+    >
+      <p className="pop-title">
+        {day.toLocaleDateString(undefined, { weekday: "long" })} ·{" "}
+        {clockOfMinutes(startMin)}–{clockOfMinutes(startMin + minutes)}
+      </p>
+
+      <input
+        autoFocus
+        placeholder="What are you doing then?"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+      />
+
+      <div className="row pop-add-fields">
+        <EstimatePicker value={estimate} onChange={setEstimate} />
+        <ClassPicker classes={classes} value={classId} onChange={setClassId} />
+      </div>
+
+      <div className="row end pop-add-actions">
+        <button type="button" className="link" onClick={onCancel}>
+          Cancel
+        </button>
+        <button disabled={!title.trim()}>Add</button>
+      </div>
+    </form>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+/**
  * One block on the bar: work, a routine, or a lecture.
  *
  * Closed, it is a name and a colour and nothing else. That is the whole design
@@ -1995,6 +2295,7 @@ function BlockBar({
   onLinkSeries,
   onRetime,
   onResize,
+  onDeleteTask,
   onOpenClass,
 }: {
   placed: Placed<PlanBlock>;
@@ -2022,6 +2323,8 @@ function BlockBar({
   onLinkSeries: (classId: string) => void;
   onRetime: (hhmm: string) => void;
   onResize: (hhmm: string) => void;
+  /** Delete the work this block is an hour of. Only ever offered on work. */
+  onDeleteTask: (task: Task) => void;
   onOpenClass: (id: string) => void;
 }) {
   const block = placed.item;
@@ -2246,9 +2549,29 @@ function BlockBar({
             )}
           </div>
 
-          {/* Said once, where the button used to be, because a card with
-              nothing to press on it should say what the gesture is. */}
-          <p className="muted small pop-hint">Drag to Unplanned to take it off.</p>
+          {/*
+            Two sentences, and they are not the same sentence.
+
+            Dragging to the rail says "not this hour" and leaves the work
+            standing; Delete says the work is not happening. Only work gets the
+            second one — a lecture is Google's row and a routine is a rule
+            about every Tuesday, and neither is a thing this button could
+            honestly delete.
+          */}
+          <div className="row pop-foot">
+            <p className="muted small pop-hint">
+              Drag to Unplanned to take it off.
+            </p>
+            {task && (
+              <button
+                className="link danger"
+                onClick={() => onDeleteTask(task)}
+                title="Delete the task itself, hours and all"
+              >
+                Delete task
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

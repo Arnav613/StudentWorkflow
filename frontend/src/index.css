@@ -2815,7 +2815,6 @@ button.link.danger:hover:not(:disabled) {
    repainted it would trade a fact about the work for a fact about the mouse.
    -------------------------------------------------------------------------*/
 
-.card.selected,
 .bar.selected,
 .rail-item.selected {
   /* Inset on the bar, which is positioned to the pixel on a timeline and
@@ -2824,8 +2823,28 @@ button.link.danger:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
-.card.selected {
+/*
+ * Written as `.list > li.card` and not as `.card.selected`, which is what it
+ * was and why nothing ever appeared on the board.
+ *
+ * A card's own box-shadow is set on `.list > li.card` — three components of
+ * specificity against two — so the selection ring lost every cascade it
+ * entered and a selected card was indistinguishable from an unselected one.
+ * The selection was working the whole time; it just had nothing to show for
+ * itself, which on a screen with a bulk Delete in it is the worst possible
+ * half of a feature to have shipped.
+ */
+.list > li.card.selected {
   box-shadow: 0 0 0 2px var(--accent);
+  border-color: var(--accent);
+  /* The left edge is the class colour and stays the class colour — losing it
+     to the accent would trade a fact about the work for a fact about the
+     mouse, which is the rule this whole block is written to. */
+  border-left-color: var(--c, var(--border-strong));
+}
+
+.list > li.card.selected.overdue {
+  border-left-color: var(--error);
 }
 
 /* A selected block that is also open keeps the open ring — they mean the same
@@ -3444,4 +3463,414 @@ button.link.danger:hover:not(:disabled) {
 
 .chat-form button {
   flex: none;
+}
+
+/* ---------------------------------------------------------------------------
+   A page head with something on the right of it
+   ------------------------------------------------------------------------ */
+
+.page-head.split {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+/* ---------------------------------------------------------------------------
+   The two-way switch
+   ---------------------------------------------------------------------------
+   Same shape as the top tabs, one size down. It is the same gesture — pick one
+   of a short list of ways to look at this — and giving it a second visual
+   language would make the page teach two things at once.
+   ------------------------------------------------------------------------ */
+
+.seg {
+  display: flex;
+  gap: 0.15rem;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  border-radius: 999px;
+  padding: 0.15rem;
+  flex: none;
+}
+
+.seg-item {
+  background: none;
+  color: var(--muted);
+  border-color: transparent;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.82rem;
+  border-radius: 999px;
+}
+
+.seg-item:hover:not(:disabled) {
+  filter: none;
+  color: var(--fg);
+}
+
+.seg-item.current {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* ---------------------------------------------------------------------------
+   Groups on the board
+   ---------------------------------------------------------------------------
+   A group is a label over a run of cards, so it is drawn as one: a header line
+   the width of the column, and the cards indented under it by a hairline that
+   says where the group ends. Not a box — a box around cards inside a column
+   that is already a box would be the third nested container on a screen whose
+   whole job is to look like a short list.
+   ------------------------------------------------------------------------ */
+
+.list > li.group {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
+  cursor: default;
+  user-select: none;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.15rem;
+}
+
+.group-fold {
+  flex: none;
+  background: none;
+  border: none;
+  padding: 0.15rem;
+  color: var(--faint);
+  line-height: 0;
+}
+
+.group-fold:hover:not(:disabled) {
+  filter: none;
+  color: var(--fg);
+}
+
+/* A triangle drawn in borders: no icon font, no inline SVG, and it rotates
+   rather than swapping for a second glyph, so the state change is legible. */
+.caret {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.12s;
+}
+
+.caret.down {
+  transform: rotate(90deg) translateX(1px);
+}
+
+.group-title {
+  background: none;
+  border: none;
+  padding: 0.1rem;
+  text-align: left;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.group-title:hover:not(:disabled) {
+  filter: none;
+  color: var(--accent);
+}
+
+.group-rename {
+  width: 100%;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.15rem 0.35rem;
+}
+
+/* Quiet until wanted. A row of Ungroup links down a column would be a column
+   about ungrouping. */
+.group-ungroup {
+  flex: none;
+  opacity: 0;
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+
+.group:hover .group-ungroup,
+.group-ungroup:focus-visible {
+  opacity: 1;
+}
+
+.group-cards {
+  list-style: none;
+  padding: 0 0 0 0.6rem;
+  margin: 0;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.group-folded {
+  margin: 0 0 0 1.1rem;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------------------
+   The board, filed by class
+   ---------------------------------------------------------------------------
+   The same cards, one column per course, each wearing that course's colour —
+   the colour its cards already wear everywhere else in the app. Sections are
+   drop targets: landing in one is a change of class, exactly as landing in a
+   status column is a change of status.
+   ------------------------------------------------------------------------ */
+
+.by-class {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.class-section h2 {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.85rem;
+}
+
+.class-section h2 .link {
+  color: inherit;
+  font: inherit;
+}
+
+.class-section h2 .count {
+  margin-left: auto;
+}
+
+.section-done {
+  display: block;
+  margin: 0.55rem 0 0 0.25rem;
+  font-size: 0.75rem;
+  color: var(--faint);
+}
+
+/* The naming field, in the place the buttons were. */
+.group-name {
+  gap: 0.4rem;
+  flex-wrap: nowrap;
+}
+
+.group-name input {
+  min-width: 10rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Writing a task straight onto the week
+   ---------------------------------------------------------------------------
+   The same panel a block opens, at the hour that was clicked. Same geometry,
+   same ways out — it is the other half of one gesture, and it would be strange
+   for it to arrive in a different shape.
+   ------------------------------------------------------------------------ */
+
+.add-pop {
+  position: absolute;
+  left: 0.15rem;
+  right: 0.15rem;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 12rem;
+  padding: 0.6rem 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  cursor: default;
+}
+
+/* High on the axis it would open out of the top of the scroller, so it hangs
+   the other way — see .bar-pop.vflip, which this is copying. */
+.add-pop.vflip {
+  bottom: auto !important;
+  top: 0;
+}
+
+.add-pop input {
+  width: 100%;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.pop-add-fields {
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.pop-add-actions {
+  gap: 0.5rem;
+}
+
+/* The block panel's foot, now that it holds two sentences rather than one. */
+.pop-foot {
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.pop-foot .pop-hint {
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   The scratchpad
+   ---------------------------------------------------------------------------
+   A page, not a form. Every line is a borderless textarea that grows to its
+   own content, and the only furniture is what appears when the pointer is
+   actually on a line — the moment this looks like thirty input fields it stops
+   being somewhere anybody writes half a thought down.
+   ------------------------------------------------------------------------ */
+
+.pad {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 1rem 1.15rem 0;
+  min-height: 22rem;
+}
+
+.pad-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.15rem 0.2rem;
+  border-radius: var(--r-sm);
+  /* The class marker paints a thin edge rather than a fill: a page of tinted
+     rows would read as six lists, and it is one page. */
+  border-left: 2px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.pad-line.hue-slate,
+.pad-line.hue-red,
+.pad-line.hue-amber,
+.pad-line.hue-green,
+.pad-line.hue-teal,
+.pad-line.hue-blue,
+.pad-line.hue-violet,
+.pad-line.hue-pink {
+  border-left-color: var(--c);
+}
+
+.pad-line:focus-within,
+.pad-line:hover {
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+
+.pad-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 0.15rem 0.25rem;
+  font: inherit;
+  line-height: 1.6;
+  color: var(--fg);
+  resize: none;
+  overflow: hidden;
+}
+
+.pad-text:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.pad-text::placeholder {
+  color: transparent;
+}
+
+.pad-line:hover .pad-text::placeholder,
+.pad-text:focus::placeholder {
+  color: var(--faint);
+}
+
+.pad-marks {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: none;
+  padding-top: 0.3rem;
+}
+
+.pad-task {
+  cursor: pointer;
+}
+
+.pad-task.struck {
+  text-decoration: line-through;
+}
+
+/* Hidden until the line is under the pointer or holds the caret. Thirty rows
+   each showing a picker and two buttons is a control panel. */
+.pad-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.pad-line:hover .pad-actions,
+.pad-line:focus-within .pad-actions {
+  opacity: 1;
+}
+
+.pad-actions .picker-trigger {
+  padding: 0.15rem 0.4rem;
+  font-size: 0.75rem;
+}
+
+/* Everything below the last line. On a page made of lines the empty part is
+   where a hand goes, and a page that ignored the click there would feel dead
+   exactly where it is emptiest. */
+.pad-rest {
+  flex: 1 1 auto;
+  min-height: 6rem;
+  background: none;
+  border: none;
+  border-radius: 0;
+  cursor: text;
+}
+
+.pad-rest:hover:not(:disabled) {
+  filter: none;
+  background: none;
+}
+
+@media (max-width: 700px) {
+  /* The actions stop hiding: there is no hover on a phone, and a control that
+     only appears on a gesture the device does not have is not a control. */
+  .pad-actions,
+  .group-ungroup {
+    opacity: 1;
+  }
+}
+
+/* Finished work, once the section has been asked for it. */
+.section-finished {
+  margin-top: 0.5rem;
+  opacity: 0.85;
 }

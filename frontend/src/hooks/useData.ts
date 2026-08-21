@@ -7,6 +7,7 @@ import type {
   RoutineOverride,
   RoutineSkip,
   Task,
+  TaskGroup,
   TaskStatus,
 } from "../lib/types";
 
@@ -30,6 +31,10 @@ export function useData(userId: string) {
   const [routineOverrides, setRoutineOverrides] = useState<RoutineOverride[]>([]);
   const [routineSkips, setRoutineSkips] = useState<RoutineSkip[]>([]);
   const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
+  // A handful of rows that only the board reads, loaded with everything else
+  // for the same reason the rest of this is: two caches that can go stale
+  // independently is the thing this hook exists to avoid.
+  const [groups, setGroups] = useState<TaskGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,13 +67,14 @@ export function useData(userId: string) {
       // The plan blocks now include mirrored calendar events, which is the
       // point: the week grid draws lectures from this load, at the speed of
       // every other row, instead of waiting on Google after it has painted.
-      const [c, t, r, p, o, k] = await Promise.all([
+      const [c, t, r, p, o, k, g] = await Promise.all([
         db.listClasses(true),
         db.listTasks(),
         db.listRoutines(),
         db.listPlanBlocks(planFrom),
         db.listRoutineOverrides(),
         db.listRoutineSkips(),
+        db.listGroups(),
       ]);
       setClasses(c);
       setTasks(t);
@@ -76,6 +82,7 @@ export function useData(userId: string) {
       setPlanBlocks(p);
       setRoutineOverrides(o);
       setRoutineSkips(k);
+      setGroups(g);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -128,6 +135,7 @@ export function useData(userId: string) {
     routineOverrides,
     routineSkips,
     planBlocks,
+    groups,
     planFrom,
     loading,
     error,
@@ -139,6 +147,7 @@ export function useData(userId: string) {
     setRoutines,
     setRoutineOverrides,
     setPlanBlocks,
+    setGroups,
     userId,
   };
 }

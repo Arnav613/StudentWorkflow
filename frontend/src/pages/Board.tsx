@@ -4,6 +4,7 @@ import { useData } from "../hooks/useData";
 import ClassesPage from "./Classes";
 import TodoPage from "./Todo";
 import WeekPage from "./Week";
+import NotesPage from "./Notes";
 import ClassDetail from "./ClassDetail";
 import AccountMenu from "../components/AccountMenu";
 import Logo from "../components/Logo";
@@ -45,6 +46,7 @@ export type View =
   | { kind: "classes" }
   | { kind: "todo" }
   | { kind: "week" }
+  | { kind: "notes" }
   | { kind: "class"; id: string; tab: ClassTab };
 
 export type ClassTab = "tasks" | "notes" | "docs" | "timetable" | "grades";
@@ -61,6 +63,7 @@ function viewToHash(v: View): string {
   if (v.kind === "classes") return "#/classes";
   if (v.kind === "todo") return "#/todo";
   if (v.kind === "week") return "#/week";
+  if (v.kind === "notes") return "#/notes";
   return `#/class/${v.id}/${v.tab}`;
 }
 
@@ -68,6 +71,7 @@ function hashToView(hash: string): View {
   const parts = hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (parts[0] === "todo") return { kind: "todo" };
   if (parts[0] === "week") return { kind: "week" };
+  if (parts[0] === "notes") return { kind: "notes" };
   if (parts[0] === "class" && parts[1]) {
     const tab = CLASS_TABS.includes(parts[2] as ClassTab)
       ? (parts[2] as ClassTab)
@@ -124,10 +128,11 @@ export default function Board({
 
   const tab = view.kind === "class" ? "classes" : view.kind;
 
-  const TOP_TAB_TITLE: Record<"classes" | "todo" | "week", string> = {
+  const TOP_TAB_TITLE: Record<"classes" | "todo" | "week" | "notes", string> = {
     classes: "Classes",
     todo: "To do",
     week: "Week",
+    notes: "Notes",
   };
 
   const TAB_LABEL: Record<ClassTab, string> = {
@@ -189,6 +194,18 @@ export default function Board({
             >
               Week
             </button>
+            {/* Fourth, and last of its kind. The three before it are the term
+                as the term sees it — courses, deadlines, hours. This one is
+                the term as you overhear it: the sentence a professor said on
+                the way out that has no due date and will still matter in
+                three weeks. It had nowhere to live, so it was either being
+                filed as a task with an invented deadline or forgotten. */}
+            <button
+              className={`tab${tab === "notes" ? " current" : ""}`}
+              onClick={() => go({ kind: "notes" })}
+            >
+              Notes
+            </button>
           </nav>
 
           <span className="spacer" />
@@ -212,6 +229,10 @@ export default function Board({
           <WeekSkeleton />
         ) : view.kind === "todo" ? (
           <BoardSkeleton />
+        ) : view.kind === "notes" ? (
+          // The pad loads its own rows and says so itself; a skeleton of the
+          // class grid in front of it would be a shape it never becomes.
+          <p className="muted">Opening your notes…</p>
         ) : (
           <ClassGridSkeleton />
         )
@@ -224,6 +245,8 @@ export default function Board({
         <TodoPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
       ) : view.kind === "week" ? (
         <WeekPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
+      ) : view.kind === "notes" ? (
+        <NotesPage store={store} onOpenClass={(id) => go({ kind: "class", id, tab: "tasks" })} />
       ) : view.kind === "class" && openClass ? (
         <ClassDetail
           cls={openClass}

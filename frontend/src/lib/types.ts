@@ -37,6 +37,54 @@ export type Task = {
   google_course_id: string | null;
   status_overridden: boolean;
   auto_completed: boolean;
+  /**
+   * The group this task was filed under, or null.
+   *
+   * A group is a label and nothing else — see `TaskGroup`. Nothing about
+   * scheduling, estimating or completing a task changes because it has one,
+   * which is the property that lets grouping exist on the board without the
+   * Week having to know it happened.
+   */
+  group_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * A name several tasks are filed under. "Bio readings", "essay", "exam prep".
+ *
+ * Deliberately not a task. It has no due date, no estimate and no hours, it
+ * never appears in the Unplanned rail and Autoplan has never heard of it. It
+ * exists so eleven readings that arrived from one course on one day can be
+ * collapsed into one line on the board — and so that collapsing them changes
+ * nothing at all about the week they are planned into.
+ */
+export type TaskGroup = {
+  id: string;
+  user_id: string;
+  title: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * One line of the scratchpad.
+ *
+ * The Notes tab is a single page you type into, but it is stored a line at a
+ * time, because a line can carry a marker: the class it is about, and the task
+ * it became. A marker held against a character offset into one long string
+ * would slide the moment anything above it was edited.
+ */
+export type ScratchLine = {
+  id: string;
+  user_id: string;
+  text: string;
+  /** A class this line is about, or null. Paints the line's chip. */
+  class_id: string | null;
+  /** Set when the line was made into a task. The task itself lives on the board. */
+  task_id: string | null;
+  position: number;
   created_at: string;
   updated_at: string;
 };

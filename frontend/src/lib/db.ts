@@ -35,7 +35,9 @@ import type {
   RoutineSkip,
   Rubric,
   RubricCriterion,
+  ScratchLine,
   Task,
+  TaskGroup,
   TaskStatus,
 } from "./types";
 import { dayKey, overrideIndex, routineBlocks } from "./schedule";
@@ -284,7 +286,9 @@ export async function deleteTask(id: string): Promise<void> {
  */
 export async function updateTasks(
   ids: string[],
-  patch: Partial<Pick<Task, "class_id" | "status" | "estimate_minutes" | "due_at">>,
+  patch: Partial<
+    Pick<Task, "class_id" | "status" | "estimate_minutes" | "due_at" | "group_id">
+  >,
 ): Promise<Task[]> {
   if (!ids.length) return [];
   return unwrap(
@@ -332,6 +336,109 @@ export async function moveTasks(
 export async function deleteTasks(ids: string[]): Promise<void> {
   if (!ids.length) return;
   const { error } = await supabase.from("tasks").delete().in("id", ids);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Groups — a name several tasks are filed under, and nothing more.
+//
+// Every write here touches either `task_groups` or `tasks.group_id`. None of
+// them touches an estimate, a due date or a block, and that is the invariant
+// the whole feature rests on: grouping is a fact about the board, so the Week
+// cannot be changed by it even by accident.
+// ---------------------------------------------------------------------------
+
+export async function listGroups(): Promise<TaskGroup[]> {
+  return unwrap(
+    await supabase.from("task_groups").select("*").order("position"),
+  );
+}
+
+export async function createGroup(input: {
+  user_id: string;
+  title: string;
+  position?: number;
+}): Promise<TaskGroup> {
+  return unwrap(
+    await supabase.from("task_groups").insert(input).select().single(),
+  );
+}
+
+export async function renameGroup(id: string, title: string): Promise<TaskGroup> {
+  return unwrap(
+    await supabase
+      .from("task_groups")
+      .update({ title })
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
+/**
+ * Delete the label. The tasks under it stay exactly where they were.
+ *
+ * The database does the ungrouping itself — `tasks.group_id` is `on delete set
+ * null` — so there is no second write to get wrong, and no window in which a
+ * task points at a group that is gone.
+ */
+export async function deleteGroup(id: string): Promise<void> {
+  const { error } = await supabase.from("task_groups").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/** File tasks under a group, or take them out of one with null. */
+export async function setTaskGroup(
+  ids: string[],
+  groupId: string | null,
+): Promise<Task[]> {
+  if (!ids.length) return [];
+  return unwrap(
+    await supabase
+      .from("tasks")
+      .update({ group_id: groupId })
+      .in("id", ids)
+      .select(),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The scratchpad — one page, stored a line at a time. See types.ScratchLine.
+// ---------------------------------------------------------------------------
+
+export async function listScratchLines(): Promise<ScratchLine[]> {
+  return unwrap(
+    await supabase.from("scratch_lines").select("*").order("position"),
+  );
+}
+
+export async function createScratchLine(input: {
+  user_id: string;
+  text?: string;
+  position: number;
+  class_id?: string | null;
+}): Promise<ScratchLine> {
+  return unwrap(
+    await supabase.from("scratch_lines").insert(input).select().single(),
+  );
+}
+
+export async function updateScratchLine(
+  id: string,
+  patch: Partial<Pick<ScratchLine, "text" | "class_id" | "task_id" | "position">>,
+): Promise<ScratchLine> {
+  return unwrap(
+    await supabase
+      .from("scratch_lines")
+      .update(patch)
+      .eq("id", id)
+      .select()
+      .single(),
+  );
+}
+
+export async function deleteScratchLine(id: string): Promise<void> {
+  const { error } = await supabase.from("scratch_lines").delete().eq("id", id);
   if (error) throw error;
 }
 
