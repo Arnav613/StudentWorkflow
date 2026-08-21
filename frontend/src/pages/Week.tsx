@@ -166,6 +166,61 @@ export default function WeekPage({
     [routines],
   );
 
+  /* --- Hours that went by without the work ---------------------------------- */
+
+  /**
+   * An hour set aside for work that is still not done, once that hour is over,
+   * is not a plan any more — and it is not history worth drawing either.
+   *
+   * So it is deleted rather than dimmed. The task goes back to the Unplanned
+   * rail carrying exactly what it still needs, indistinguishable from work
+   * that was never scheduled, and the next Autoplan finds it a new hour. The
+   * previous behaviour kept the block on the grid greyed out *and* listed the
+   * task as unplanned, which is the same evening claimed by two sections of
+   * one screen: the board saying Tuesday eight to nine is spoken for, the rail
+   * underneath saying that work has no hour against it.
+   *
+   * Only work, and only work that is unfinished. A lapsed lecture is a lecture
+   * that happened, a routine block is a standing arrangement, and an hour
+   * spent on something now marked done is a receipt — all three are things
+   * that did occur, and the grid is right to keep showing them.
+   *
+   * Swept when the week loads and whenever the rows change, which is the same
+   * cadence everything else on this screen reads the clock at. A block that
+   * lapses while the tab sits open is caught by the next render that touches
+   * it; nothing here polls, because a planner that rewrites your week on a
+   * timer while you are looking at it is worse than one that is a few minutes
+   * behind.
+   */
+  const sweeping = useRef(new Set<string>());
+  useEffect(() => {
+    const now = Date.now();
+    const lapsed = planBlocks.filter(
+      (b) =>
+        b.task_id &&
+        !sweeping.current.has(b.id) &&
+        Date.parse(b.ends_at) <= now &&
+        taskById.get(b.task_id)?.status !== "done",
+    );
+    if (!lapsed.length) return;
+
+    const ids = lapsed.map((b) => b.id);
+    for (const id of ids) sweeping.current.add(id);
+    setPlanBlocks((prev) => prev.filter((b) => !ids.includes(b.id)));
+
+    void (async () => {
+      try {
+        await db.deleteBlocks(ids);
+      } catch {
+        // The row is still there and the screen no longer shows it, which the
+        // next load quietly puts right — this effect runs again and tries
+        // again. Not worth a toast: nothing the person at the keyboard did
+        // failed, and there is nothing for them to do about it.
+        for (const id of ids) sweeping.current.delete(id);
+      }
+    })();
+  }, [planBlocks, taskById, setPlanBlocks]);
+
   /* --- What a lecture is, and what is on in it ---------------------------- */
 
   /**
@@ -405,8 +460,6 @@ export default function WeekPage({
   const plannedMinutes = onBoard
     .filter((b) => b.task_id && Date.parse(b.ends_at) > Date.now())
     .reduce((sum, b) => sum + blockMinutes(b), 0);
-
-  const missed = outstanding.filter((u) => u.missed).length;
 
   /* --- Selecting several at once ------------------------------------------ */
 
@@ -1876,7 +1929,6 @@ export default function WeekPage({
           outstanding={outstanding}
           skipped={skipped}
           classById={classById}
-          missed={missed}
           selection={selection}
           planning={generating}
           onAutoplan={() => void fillGaps()}
@@ -2584,7 +2636,6 @@ function UnplannedRail({
   outstanding,
   skipped,
   classById,
-  missed,
   selection,
   planning,
   onAutoplan,
@@ -2597,12 +2648,10 @@ function UnplannedRail({
     task_id: string;
     minutes: number;
     guessed: boolean;
-    missed: boolean;
     task: Task;
   }[];
   skipped: PlanBlock[];
   classById: Map<string, Class>;
-  missed: number;
   selection: Selection;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: "unplanned" });
@@ -2622,17 +2671,6 @@ function UnplannedRail({
             : "Nothing unplanned."}
         </span>
       </div>
-
-      {/* The honest sentence about work that did not happen. An hour that went
-          by without it stops counting, which is why the task is back here — it
-          was neither deleted nor quietly marked as handled. */}
-      {missed > 0 && (
-        <p className="muted small notice">
-          {missed === 1 ? "One thing" : `${missed} things`} had time set aside
-          that has since passed. Those hours are back here, and Autoplan will
-          find them new ones.
-        </p>
-      )}
 
       {/*
         The one button that adds hours to the week, and it lives here rather
@@ -2667,7 +2705,6 @@ function UnplannedRail({
                 selected={selection.has(`task:${u.task_id}`)}
                 onSelect={(e) => selection.select(`task:${u.task_id}`, e)}
               >
-                {u.missed && <span className="tag">Missed</span>}
                 <span className={u.guessed ? "muted small guessed" : "muted small"}>
                   {formatMinutes(u.minutes)}
                 </span>
